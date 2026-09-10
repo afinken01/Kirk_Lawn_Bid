@@ -1,0 +1,17 @@
+{
+  "name": "lawn-bid",
+  "version": "1.0.0",
+  "description": "Homeowner job requests broadcast to a local lawn care network by SMS; pros bid by texting back; backend picks the winner.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.0",
+    "twilio": "^5.3.0"
+  }
+}
