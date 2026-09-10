@@ -277,7 +277,7 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     // away on an off-hours window.
     const expectedBy = formatExpectedReplyTime(closesAt, now);
     await sendSMS(job.phone,
-      `Thank you for using Kirkwood Lawncare and Landscape Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}.`);
+      `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}.`);
 
     // Auto-select the best bid once the bidding window closes
     scheduleClose(job.id, windowMs);
