@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lawn Bid — admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --evergreen:#1F3D2B; --marigold:#C98A2C; --paper:#EDE6D6; --paper-line:#D8CDB4;
+    --ink:#23261F; --ink-soft:#5B5A4E; --white:#FBF9F3; --error:#9C3B2E;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;}
+  header{background:var(--evergreen);color:var(--white);padding:26px 24px;}
+  header h1{font-family:'Zilla Slab',serif;margin:0;font-size:1.4rem;}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px;}
+  section{background:var(--white);border-radius:4px;padding:22px 24px;margin-bottom:24px;box-shadow:0 8px 20px rgba(20,42,29,0.08);}
+  h2{font-family:'Zilla Slab',serif;font-size:1.1rem;margin:0 0 16px;}
+  .pro-form{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+  .pro-form input{flex:1;min-width:140px;padding:9px 12px;border:1.5px solid var(--paper-line);border-radius:3px;font-family:inherit;}
+  .pro-form button, .btn{background:var(--marigold);color:var(--evergreen);border:none;font-weight:700;padding:9px 16px;border-radius:3px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .pro-form button:hover, .btn:hover{background:#B87D24;}
+  table{width:100%;border-collapse:collapse;font-size:0.92rem;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--paper-line);}
+  th{color:var(--ink-soft);font-weight:600;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.03em;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:0.78rem;font-weight:600;}
+  .pill.open{background:#EAF1E2;color:var(--evergreen);}
+  .pill.matched{background:#FCEFDD;color:#8A5A16;}
+  .pill.expired{background:#F1EEE6;color:var(--ink-soft);}
+  .job-card{border:1px solid var(--paper-line);border-radius:4px;padding:16px 18px;margin-bottom:14px;}
+  .job-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+  .job-head strong{font-family:'Zilla Slab',serif;font-size:1.05rem;}
+  .job-meta{color:var(--ink-soft);font-size:0.88rem;margin-bottom:10px;}
+  .bid-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-top:1px dashed var(--paper-line);font-size:0.9rem;}
+  .bid-row:first-of-type{border-top:none;}
+  .toggle-link{color:var(--ink-soft);cursor:pointer;font-size:0.85rem;text-decoration:underline;}
+  .empty{color:var(--ink-soft);font-size:0.9rem;}
+  .refresh{float:right;font-size:0.85rem;color:var(--ink-soft);cursor:pointer;text-decoration:underline;}
+</style>
+</head>
+<body>
+<header><h1>Lawn Bid — admin dashboard</h1></header>
+<div class="wrap">
+
+  <section>
+    <h2>Pro network</h2>
+    <form class="pro-form" id="proForm">
+      <input type="text" id="proName" placeholder="Pro or crew name" required>
+      <input type="tel" id="proPhone" placeholder="Phone number" required>
+      <button type="submit">Add to network</button>
+    </form>
+    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div id="jobsList"><p class="empty">Loading...</p></div>
+  </section>
+
+</div>
+
+<script>
+async function loadPros(){
+  const pros = await fetch('/api/admin/pros').then(r=>r.json());
+  const tbody = document.querySelector('#prosTable tbody');
+  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="4" class="empty">No pros added yet.</td></tr>';
+  pros.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.name}</td><td>${p.phone}</td>
+      <td>${p.active ? 'Active' : 'Paused'}</td>
+      <td><span class="toggle-link" onclick="togglePro(${p.id})">${p.active ? 'pause' : 'resume'}</span></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function togglePro(id){
+  await fetch(`/api/admin/pros/${id}/toggle`, { method:'POST' });
+  loadPros();
+}
+
+document.getElementById('proForm').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const name = document.getElementById('proName').value.trim();
+  const phone = document.getElementById('proPhone').value.trim();
+  if(!name || !phone) return;
+  await fetch('/api/admin/pros', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, phone })
+  });
+  document.getElementById('proForm').reset();
+  loadPros();
+});
+
+async function loadJobs(){
+  const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
+  const list = document.getElementById('jobsList');
+  if(!jobs.length){ list.innerHTML = '<p class="empty">No job requests yet.</p>'; return; }
+  list.innerHTML = '';
+  jobs.forEach(j=>{
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    const bidsHtml = j.bids.length
+      ? j.bids.map(b => `
+        <div class="bid-row">
+          <span>${b.pro_name || b.pro_phone} — $${b.price.toFixed(2)}</span>
+          ${j.status === 'open' ? `<button class="btn" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
+            : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>' : '')}
+        </div>`).join('')
+      : '<p class="empty">No bids yet.</p>';
+
+    card.innerHTML = `
+      <div class="job-head">
+        <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
+        <span class="pill ${j.status}">${j.status}</span>
+      </div>
+      <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ''}</div>
+      ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
+      ${bidsHtml}
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function selectBid(jobId, bidId){
+  await fetch(`/api/admin/jobs/${jobId}/select`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ bidId })
+  });
+  loadAll();
+}
+
+function loadAll(){ loadPros(); loadJobs(); }
+loadAll();
+setInterval(loadJobs, 15000);
+</script>
+</body>
+</html>
