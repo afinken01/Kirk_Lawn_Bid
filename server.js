@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const PORT = process.env.PORT || 3000;
@@ -95,6 +96,42 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false })); // needed for Twilio's inbound webhook
 app.use('/uploads', express.static(uploadDir));
+
+// Constant-time comparison so a wrong password doesn't leak timing info.
+function safeEqual(a, b) {
+  const bufA = Buffer.from(a || '');
+  const bufB = Buffer.from(b || '');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Gate the admin dashboard and every /api/admin/* route behind HTTP Basic
+// Auth. Requires ADMIN_PASSWORD to be set — if it isn't, admin access is
+// refused entirely rather than left open by accident.
+function requireAdminAuth(req, res, next) {
+  const expectedPassword = process.env.ADMIN_PASSWORD;
+  if (!expectedPassword) {
+    return res.status(500).send('Admin access is not configured. Set ADMIN_PASSWORD in your environment variables.');
+  }
+  const expectedUsername = process.env.ADMIN_USERNAME || 'admin';
+  const [scheme, encoded] = (req.headers.authorization || '').split(' ');
+
+  if (scheme === 'Basic' && encoded) {
+    const [username, password] = Buffer.from(encoded, 'base64').toString().split(':');
+    if (safeEqual(username, expectedUsername) && safeEqual(password, expectedPassword)) {
+      return next();
+    }
+  }
+
+  res.set('WWW-Authenticate', 'Basic realm="Lawn Bid Admin"');
+  return res.status(401).send('Authentication required.');
+}
+
+// Must be registered before express.static below, so a request for
+// /admin.html hits the auth check first instead of being served directly.
+app.use('/admin.html', requireAdminAuth);
+app.use('/api/admin', requireAdminAuth);
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Normalize a phone number to a rough E.164-ish key for matching (US-centric default)
@@ -240,7 +277,7 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     // away on an off-hours window.
     const expectedBy = formatExpectedReplyTime(closesAt, now);
     await sendSMS(job.phone,
-      `Thank you for using Kirkwood Lawn and Landscape Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}.`);
+      `Thank you for using Kirkwood Lawncare and Landscape Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}.`);
 
     // Auto-select the best bid once the bidding window closes
     scheduleClose(job.id, windowMs);
