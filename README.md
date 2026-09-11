@@ -155,6 +155,16 @@ be paused, which stops them from receiving future job broadcasts.
 To change the fee tiers or amounts, edit `computeFeeAmount()` in
 `server.js`.
 
+### Optional: photo attached to the pro broadcast
+
+If a homeowner uploads a photo and `PUBLIC_BASE_URL` is set, the job
+broadcast to every pro in the network is sent as an MMS with that photo
+attached, so pros can see the job before bidding — not just the eventual
+winner. Without `PUBLIC_BASE_URL` set, the photo is still saved and visible
+in the admin dashboard, it just isn't attached to the text (Twilio needs an
+absolute, publicly reachable URL to fetch the image from — it can't reach
+localhost or a relative path).
+
 ### Optional: QR code for payment
 
 If you set `PAYMENT_LINK_TEMPLATE` and `PUBLIC_BASE_URL` in `.env`, the

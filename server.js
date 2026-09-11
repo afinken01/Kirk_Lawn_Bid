@@ -189,6 +189,14 @@ function qrImageUrlForJob(jobId) {
   return `${base.replace(/\/$/, '')}/qr/fee/${jobId}.png`;
 }
 
+// Same idea, for an uploaded job photo (stored at e.g. /uploads/job-123.jpg)
+// — needs to become an absolute URL for Twilio to attach it as an MMS.
+function publicUrlFor(relativePath) {
+  const base = process.env.PUBLIC_BASE_URL;
+  if (!base || !relativePath) return null;
+  return `${base.replace(/\/$/, '')}${relativePath}`;
+}
+
 function jobSummaryText(job) {
   const services = JSON.parse(job.services).join(', ');
   const yardSizeLine = job.yard_size ? ` Yard size: ${job.yard_size}.` : '';
@@ -316,8 +324,9 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
 
     // 3: text every active pro in the network
     const pros = db.prepare('SELECT * FROM pros WHERE active = 1').all();
-    const text = jobSummaryText(job);
-    await Promise.all(pros.map(p => sendSMS(p.phone, text)));
+    const photoMediaUrl = publicUrlFor(photoPath);
+    const text = jobSummaryText(job) + (photoMediaUrl ? ' A photo of the job is attached.' : '');
+    await Promise.all(pros.map(p => sendSMS(p.phone, text, photoMediaUrl)));
 
     // Let the homeowner know their request actually went out — otherwise
     // they hear nothing until a winner is picked, which can be many hours
