@@ -13,6 +13,7 @@ const BUSINESS_HOURS_START = parseInt(process.env.BUSINESS_HOURS_START || '9', 1
 const BUSINESS_HOURS_END = parseInt(process.env.BUSINESS_HOURS_END || '18', 10);     // 24hr, e.g. 18 = 6pm
 const SOFT_CLOSE_THRESHOLD_MINUTES = parseFloat(process.env.SOFT_CLOSE_THRESHOLD_MINUTES || '5');
 const SOFT_CLOSE_EXTENSION_MINUTES = parseFloat(process.env.SOFT_CLOSE_EXTENSION_MINUTES || '5');
+const CONFIRMATION_WINDOW_MINUTES = parseFloat(process.env.CONFIRMATION_WINDOW_MINUTES || '120');
 const TWILIO_ENABLED = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
 
 // ---------- Twilio client (falls back to console logging if not configured) ----------
@@ -64,8 +65,10 @@ db.exec(`
     address TEXT NOT NULL,
     phone TEXT NOT NULL,
     photo_path TEXT,
-    status TEXT NOT NULL DEFAULT 'open', -- open | matched | expired | cancelled
+    status TEXT NOT NULL DEFAULT 'open', -- open | awaiting_confirmation | matched | expired | cancelled
     winning_bid_id INTEGER,
+    pending_bid_id INTEGER,
+    confirmation_expires_at TEXT,
     fee_amount REAL,
     fee_paid INTEGER NOT NULL DEFAULT 0,
     closes_at TEXT NOT NULL,
@@ -252,18 +255,44 @@ function computeInitialWindowMs(now) {
   return msUntilOpen + (60 * 60 * 1000); // + 1 hour buffer past opening
 }
 
-// In-memory registry of the pending "close bidding" timer per job, so a
-// late bid can push the close time back (soft close) by rescheduling it.
+// In-memory registry of the pending timer per job — either the "close
+// bidding" timer or, once a bid is tentatively selected, the "homeowner
+// didn't respond" timer. Only one is ever active per job at a time, so
+// reusing the same map for both is safe.
 const jobTimers = new Map();
 
-function scheduleClose(jobId, delayMs) {
+function clearJobTimer(jobId) {
   const existing = jobTimers.get(jobId);
-  if (existing) clearTimeout(existing);
+  if (existing) {
+    clearTimeout(existing);
+    jobTimers.delete(jobId);
+  }
+}
+
+function scheduleClose(jobId, delayMs) {
+  clearJobTimer(jobId);
   const timer = setTimeout(() => {
     jobTimers.delete(jobId);
     selectWinner(jobId).catch(err => console.error('selectWinner error:', err));
   }, Math.max(delayMs, 0));
   jobTimers.set(jobId, timer);
+}
+
+// If the homeowner never replies Y or N within CONFIRMATION_WINDOW_MINUTES,
+// cancel the job automatically rather than leaving it stuck waiting forever.
+function scheduleConfirmationTimeout(jobId, delayMs) {
+  clearJobTimer(jobId);
+  const timer = setTimeout(() => {
+    jobTimers.delete(jobId);
+    handleConfirmationTimeout(jobId).catch(err => console.error('handleConfirmationTimeout error:', err));
+  }, Math.max(delayMs, 0));
+  jobTimers.set(jobId, timer);
+}
+
+async function handleConfirmationTimeout(jobId) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  if (!job || job.status !== 'awaiting_confirmation') return; // already resolved
+  await cancelPendingJob(jobId, 'timeout');
 }
 
 // If a bid lands within SOFT_CLOSE_THRESHOLD_MINUTES of the close time,
@@ -281,17 +310,29 @@ function maybeExtendWindow(job, now) {
   return true;
 }
 
-// On startup, re-arm timers for any jobs that were still open when the
-// server last stopped (in-memory timers don't survive a restart).
+// On startup, re-arm timers for any jobs that were mid-flight when the
+// server last stopped (in-memory timers don't survive a restart) — both
+// jobs still collecting bids, and jobs waiting on a homeowner's Y/N reply.
 function recoverOpenJobTimers() {
-  const openJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'open'`).all();
   const now = new Date();
+
+  const openJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'open'`).all();
   for (const job of openJobs) {
     const remainingMs = new Date(job.closes_at).getTime() - now.getTime();
     if (remainingMs <= 0) {
       selectWinner(job.id).catch(err => console.error('selectWinner error:', err));
     } else {
       scheduleClose(job.id, remainingMs);
+    }
+  }
+
+  const pendingJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'awaiting_confirmation'`).all();
+  for (const job of pendingJobs) {
+    const remainingMs = new Date(job.confirmation_expires_at).getTime() - now.getTime();
+    if (remainingMs <= 0) {
+      handleConfirmationTimeout(job.id).catch(err => console.error('handleConfirmationTimeout error:', err));
+    } else {
+      scheduleConfirmationTimeout(job.id, remainingMs);
     }
   }
 }
@@ -325,7 +366,7 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     // 3: text every active pro in the network
     const pros = db.prepare('SELECT * FROM pros WHERE active = 1').all();
     const photoMediaUrl = publicUrlFor(photoPath);
-    const text = jobSummaryText(job) + (photoMediaUrl ? ' A photo of the job is attached.' : '');
+    const text = jobSummaryText(job) + (photoMediaUrl ? ' A photo of the job is attached.' : '') + ' Reply STOP to opt out.';
     await Promise.all(pros.map(p => sendSMS(p.phone, text, photoMediaUrl)));
 
     // Let the homeowner know their request actually went out — otherwise
@@ -333,7 +374,7 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     // away on an off-hours window.
     const expectedBy = formatExpectedReplyTime(closesAt, now);
     await sendSMS(job.phone,
-      `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}.`);
+      `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`);
 
     // Auto-select the best bid once the bidding window closes
     scheduleClose(job.id, windowMs);
@@ -354,9 +395,7 @@ app.post('/api/sms-inbound', async (req, res) => {
   const match = body.match(/bid\D*(\d+)\D+\$?(\d+(?:\.\d{1,2})?)/i);
 
   let reply;
-  if (!match) {
-    reply = `Sorry, we couldn't read that bid. Reply like: BID <job number> <price>, e.g. BID 12 85`;
-  } else {
+  if (match) {
     const jobId = parseInt(match[1], 10);
     const price = parseFloat(match[2]);
     const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
@@ -389,6 +428,31 @@ app.post('/api/sms-inbound', async (req, res) => {
         reply += ` Bidding on this job was just extended by ${SOFT_CLOSE_EXTENSION_MINUTES} minutes.`;
       }
     }
+  } else {
+    // Not a bid — check whether this number has a job waiting on a Y/N
+    // confirmation reply (a homeowner deciding whether to accept a bid).
+    const normalizedFrom = normalizePhone(from);
+    const pendingJob = db.prepare(`
+      SELECT * FROM jobs WHERE phone = ? AND status = 'awaiting_confirmation'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(normalizedFrom);
+    const normalizedBody = body.toLowerCase();
+
+    if (pendingJob && (normalizedBody === 'y' || normalizedBody === 'yes')) {
+      const winner = await confirmBid(pendingJob.id);
+      const proLabel = winner ? (winner.pro_name || winner.pro_phone) : 'the pro';
+      reply = `Great — we've confirmed the bid from ${proLabel} for job #${pendingJob.id}. They'll be in touch soon.`;
+    } else if (pendingJob && (normalizedBody === 'n' || normalizedBody === 'no')) {
+      await cancelPendingJob(pendingJob.id, 'declined');
+      reply = `Got it — we've cancelled job #${pendingJob.id}. Let us know if you'd like to submit a new request.`;
+    } else if (pendingJob) {
+      const bid = db.prepare('SELECT * FROM bids WHERE id = ?').get(pendingJob.pending_bid_id);
+      const proLabel = bid ? (bid.pro_name || bid.pro_phone) : 'the pro';
+      const priceLabel = bid ? `$${bid.price.toFixed(2)}` : 'the';
+      reply = `We're still waiting on your response for job #${pendingJob.id} — reply Y to accept the ${priceLabel} bid from ${proLabel}, or N to cancel.`;
+    } else {
+      reply = `Sorry, we couldn't read that. Reply like: BID <job number> <price>, e.g. BID 12 85`;
+    }
   }
 
   res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(reply)}</Message></Response>`);
@@ -398,7 +462,7 @@ function escapeXml(str) {
   return str.replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
 }
 
-// ---------- 4 (cont'd): backend selects the best bid and alerts the homeowner ----------
+// ---------- 4 (cont'd): backend picks a bid and asks the homeowner to confirm ----------
 async function selectWinner(jobId) {
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
   if (!job || job.status !== 'open') return null;
@@ -412,26 +476,74 @@ async function selectWinner(jobId) {
   }
 
   const winner = bids[0]; // lowest price wins; swap this line to change the selection rule
-  const feeAmount = computeFeeAmount(winner.price);
-  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ?, fee_amount = ? WHERE id = ?`)
-    .run(winner.id, feeAmount, jobId);
+  await initiateConfirmation(jobId, winner);
+  return winner;
+}
 
-  const proLabel = winner.pro_name || winner.pro_phone;
+// Tentatively selects a bid and asks the homeowner to accept or decline it
+// by text (Y/N) before anything else happens — the winning pro isn't
+// notified, and other bidders aren't told they lost, until the homeowner
+// confirms. Used both by the automatic bid-window close and by an admin
+// manually picking a bid from the dashboard.
+async function initiateConfirmation(jobId, bid) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  const feeAmount = computeFeeAmount(bid.price);
+  const confirmationExpiresAt = new Date(Date.now() + CONFIRMATION_WINDOW_MINUTES * 60 * 1000);
+
+  db.prepare(`
+    UPDATE jobs SET status = 'awaiting_confirmation', pending_bid_id = ?, fee_amount = ?, confirmation_expires_at = ?
+    WHERE id = ?
+  `).run(bid.id, feeAmount, confirmationExpiresAt.toISOString(), jobId);
+
+  const proLabel = bid.pro_name || bid.pro_phone;
   await sendSMS(job.phone,
-    `Your job #${jobId} got a bid! ${proLabel} offered $${winner.price.toFixed(2)}. They'll reach out at ${job.address} soon.`);
+    `Your job #${jobId} got a bid: $${bid.price.toFixed(2)} from ${proLabel}. Reply Y to accept this bid, N to cancel the request.`);
 
-  const paymentUrl = paymentLinkForFee(feeAmount);
+  scheduleConfirmationTimeout(jobId, CONFIRMATION_WINDOW_MINUTES * 60 * 1000);
+}
+
+// Homeowner replied Y — finalize the match: notify the winning pro (with
+// the fee and QR code, if configured) and let the other bidders know.
+async function confirmBid(jobId) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  if (!job || job.status !== 'awaiting_confirmation') return null;
+  clearJobTimer(jobId);
+
+  const winner = db.prepare('SELECT * FROM bids WHERE id = ?').get(job.pending_bid_id);
+  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ? WHERE id = ?`).run(winner.id, jobId);
+
+  const paymentUrl = paymentLinkForFee(job.fee_amount);
   const qrImageUrl = paymentUrl ? qrImageUrlForJob(jobId) : null;
   const payLine = qrImageUrl ? ' Scan the QR code to pay.' : (paymentUrl ? ` Pay here: ${paymentUrl}` : '');
   await sendSMS(winner.pro_phone,
-    `You won job #${jobId}! A $${feeAmount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`,
+    `You won job #${jobId}! A $${job.fee_amount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`,
     qrImageUrl);
 
-  const losers = bids.slice(1);
-  await Promise.all(losers.map(b =>
+  const others = db.prepare('SELECT * FROM bids WHERE job_id = ? AND id != ?').all(jobId, winner.id);
+  await Promise.all(others.map(b =>
     sendSMS(b.pro_phone, `Job #${jobId} was awarded to another bidder this time. Thanks for bidding!`)));
 
   return winner;
+}
+
+// Homeowner replied N, or never replied in time — cancel the job. No fee is
+// owed since nothing was ever confirmed, and every bidder is notified.
+async function cancelPendingJob(jobId, reason) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  if (!job || job.status !== 'awaiting_confirmation') return null;
+  clearJobTimer(jobId);
+
+  db.prepare(`UPDATE jobs SET status = 'cancelled', fee_amount = NULL WHERE id = ?`).run(jobId);
+
+  const allBidders = db.prepare('SELECT * FROM bids WHERE job_id = ?').all(jobId);
+  const message = reason === 'timeout'
+    ? `Job #${jobId} was cancelled because the homeowner didn't respond in time. Thanks for bidding!`
+    : reason === 'admin'
+    ? `Job #${jobId} was cancelled. Thanks for bidding!`
+    : `Job #${jobId} was cancelled by the homeowner. Thanks for bidding!`;
+  await Promise.all(allBidders.map(b => sendSMS(b.pro_phone, message)));
+
+  return job;
 }
 
 // ---------- Admin: manage the pro network and review/override bids ----------
@@ -468,29 +580,40 @@ app.get('/api/admin/jobs', (req, res) => {
 });
 
 // Manually pick a winner before the auto-timer fires
+// Manually pick a bid before the auto-timer fires — like the automatic
+// path, this asks the homeowner to confirm rather than matching instantly.
 app.post('/api/admin/jobs/:id/select', async (req, res) => {
   const { bidId } = req.body;
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
+  if (job.status !== 'open') return res.status(400).json({ error: 'job is not open for selection' });
   const bid = db.prepare('SELECT * FROM bids WHERE id = ? AND job_id = ?').get(bidId, job.id);
   if (!bid) return res.status(404).json({ error: 'bid not found' });
 
-  const feeAmount = computeFeeAmount(bid.price);
-  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ?, fee_amount = ? WHERE id = ?`)
-    .run(bid.id, feeAmount, job.id);
-  const proLabel = bid.pro_name || bid.pro_phone;
-  await sendSMS(job.phone, `Your job #${job.id} was matched! ${proLabel} offered $${bid.price.toFixed(2)}. They'll reach out soon.`);
+  clearJobTimer(job.id); // cancel the pending bid-window close timer — we're resolving this now
+  await initiateConfirmation(job.id, bid);
+  res.json({ ok: true });
+});
 
-  const paymentUrl = paymentLinkForFee(feeAmount);
-  const qrImageUrl = paymentUrl ? qrImageUrlForJob(job.id) : null;
-  const payLine = qrImageUrl ? ' Scan the QR code to pay.' : (paymentUrl ? ` Pay here: ${paymentUrl}` : '');
-  await sendSMS(bid.pro_phone,
-    `You won job #${job.id}! A $${feeAmount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}.`,
-    qrImageUrl);
+// Admin override: finalize a pending bid immediately without waiting on
+// the homeowner's text reply — e.g. if they confirmed over the phone.
+app.post('/api/admin/jobs/:id/force-confirm', async (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job || job.status !== 'awaiting_confirmation') {
+    return res.status(400).json({ error: 'job is not awaiting confirmation' });
+  }
+  await confirmBid(job.id);
+  res.json({ ok: true });
+});
 
-  const others = db.prepare('SELECT * FROM bids WHERE job_id = ? AND id != ?').all(job.id, bid.id);
-  await Promise.all(others.map(b => sendSMS(b.pro_phone, `Job #${job.id} was awarded to another bidder. Thanks for bidding!`)));
-
+// Admin override: cancel a pending bid immediately without waiting for a
+// homeowner reply or the confirmation timeout.
+app.post('/api/admin/jobs/:id/force-cancel', async (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job || job.status !== 'awaiting_confirmation') {
+    return res.status(400).json({ error: 'job is not awaiting confirmation' });
+  }
+  await cancelPendingJob(job.id, 'admin');
   res.json({ ok: true });
 });
 

@@ -17,13 +17,24 @@ pros).
 4. When a pro replies, Twilio forwards that text to `POST /api/sms-inbound`,
    which parses the price and records the bid.
 5. After a bidding window (30 minutes by default, configurable) the backend
-   automatically picks the **lowest bid**, texts the homeowner the result,
-   texts the winning pro the homeowner's contact info, and lets the other
-   bidders know they didn't win. You can also pick a bid manually anytime
-   before the window closes from the admin dashboard.
-6. The homeowner also gets an immediate confirmation text the moment their
+   picks the **lowest bid** and texts the homeowner asking them to confirm
+   it — "Reply Y to accept this bid, N to cancel the request." Nothing else
+   happens yet: the winning pro isn't notified and losing bidders aren't
+   told they lost until the homeowner responds. You can also pick a bid
+   manually anytime before the window closes from the admin dashboard,
+   which triggers the same confirmation step.
+6. If the homeowner replies **Y**, the winning pro is texted the job details
+   and network fee, and every other bidder is told the job went to someone
+   else. If they reply **N**, the job is cancelled and every bidder is
+   notified — no fee is ever assessed. If the homeowner doesn't reply within
+   `CONFIRMATION_WINDOW_MINUTES` (2 hours by default), the job is
+   automatically cancelled the same way, so it never hangs indefinitely. An
+   admin can also short-circuit this from the dashboard with "Force
+   confirm" or "Force cancel" — useful if the homeowner confirmed by phone
+   instead of by text.
+7. The homeowner also gets an immediate confirmation text the moment their
    request goes out — "We've texted our lawncare pros, expect a reply by
-   [time]" — using the same close time from step 5, so they're not left
+   [time]" — using the close time from step 5, so they're not left
    wondering whether anything happened, especially on a long off-hours
    window.
 
@@ -95,13 +106,28 @@ replies will come back in as real bids.
   favor a pro's rating, or the fastest reply), edit the `selectWinner()`
   function in `server.js` — the bids for a job are already loaded there,
   sorted by price.
+- **Homeowner confirmation**: once a bid is selected (automatically or by an
+  admin), the homeowner has `CONFIRMATION_WINDOW_MINUTES` (default 120) to
+  reply Y or N before the job is auto-cancelled. This applies to every
+  selection path — the automatic close, and the admin dashboard's manual
+  "Select" button — so nothing is finalized without the homeowner's
+  explicit go-ahead. Admins can bypass this from the dashboard with "Force
+  confirm" / "Force cancel" if the homeowner confirmed some other way (e.g.
+  a phone call).
 - **Bid format**: pros reply with `BID <job#> <price>`, e.g. `BID 12 85`.
   The parser (in `/api/sms-inbound`) is forgiving of `#`, `$`, and punctuation
   around those two numbers.
-- **Restarts**: if the server restarts while jobs are still open, it
-  re-checks each one's stored close time on startup — a job whose window
-  already passed gets resolved immediately, and one still in progress picks
-  up with its original close time rather than resetting.
+- **Opt-out language**: the first text a new phone number receives — the
+  job broadcast to a pro, and the "thank you" confirmation to a homeowner —
+  includes "Reply STOP to opt out," matching what's disclosed in
+  `privacy.html`. Twilio numbers handle STOP/START/HELP automatically at the
+  carrier level once A2P registration is complete; no code changes are
+  needed to process those replies yourself.
+- **Restarts**: if the server restarts while jobs are mid-flight, it
+  re-checks each one's stored deadline on startup — both jobs still
+  collecting bids and jobs waiting on a homeowner's Y/N reply. A deadline
+  that already passed gets resolved immediately; one still in progress
+  picks up with its original deadline rather than resetting.
 
 **A note on timezone**: business hours are evaluated using the server's
 local system time. If you deploy somewhere with a different timezone than
@@ -113,19 +139,25 @@ match (e.g. `TZ=America/Chicago`) so "9am" means what you expect.
 ```
 lawn-bid/
 ├── public/
-│   ├── index.html      # homeowner job request form
-│   └── admin.html       # manage pros, view jobs & bids, override winner
-├── server.js             # Express backend: requests, SMS, bidding logic
+│   ├── index.html       # homeowner job request form
+│   ├── admin.html        # manage pros, view jobs & bids, override winner
+│   ├── privacy.html      # privacy policy
+│   └── terms.html        # terms and conditions
+├── server.js              # Express backend: requests, SMS, bidding logic
 ├── package.json
 ├── .env.example
-└── data/lawnbid.db       # SQLite database (created automatically)
+├── .gitignore
+└── data/lawnbid.db        # SQLite database (created automatically)
 ```
 
 ## Notes on the data model
 
 - **`jobs`** — one row per homeowner request (services, address, phone,
-  photo, status: `open` → `matched` or `expired`, plus `fee_amount` and
-  `fee_paid` once a job is matched — see "Network fee" below).
+  photo, status: `open` → `awaiting_confirmation` → `matched`, `cancelled`,
+  or `expired`). `pending_bid_id` holds the tentatively selected bid while
+  waiting on the homeowner's Y/N reply; `winning_bid_id` is only set once
+  they confirm. `fee_amount` and `fee_paid` track the network fee — see
+  "Network fee" below.
 - **`pros`** — your network of lawn care professionals (name, phone,
   active/paused).
 - **`bids`** — one row per SMS bid received, linked to a job.
