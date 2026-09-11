@@ -29,6 +29,8 @@
   .pill.open{background:#EAF1E2;color:var(--evergreen);}
   .pill.matched{background:#FCEFDD;color:#8A5A16;}
   .pill.expired{background:#F1EEE6;color:var(--ink-soft);}
+  .pill.new{background:#FCEFDD;color:#8A5A16;}
+  .pill.resolved{background:#F1EEE6;color:var(--ink-soft);}
   .job-card{border:1px solid var(--paper-line);border-radius:4px;padding:16px 18px;margin-bottom:14px;}
   .job-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
   .job-head strong{font-family:'Zilla Slab',serif;font-size:1.05rem;}
@@ -57,6 +59,11 @@
   <section>
     <h2>Jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
     <div id="jobsList"><p class="empty">Loading...</p></div>
+  </section>
+
+  <section>
+    <h2>Customer service messages <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div id="supportList"><p class="empty">Loading...</p></div>
   </section>
 
 </div>
@@ -110,6 +117,12 @@ async function loadJobs(){
         </div>`).join('')
       : '<p class="empty">No bids yet.</p>';
 
+    const feeHtml = (j.status === 'matched' && j.fee_amount != null) ? `
+      <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
+        <span>Network fee: $${j.fee_amount.toFixed(2)} <span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span></span>
+        <button class="btn" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>
+      </div>` : '';
+
     card.innerHTML = `
       <div class="job-head">
         <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
@@ -118,6 +131,7 @@ async function loadJobs(){
       <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ''}</div>
       ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
       ${bidsHtml}
+      ${feeHtml}
     `;
     list.appendChild(card);
   });
@@ -131,7 +145,44 @@ async function selectBid(jobId, bidId){
   loadAll();
 }
 
-function loadAll(){ loadPros(); loadJobs(); }
+async function toggleFeePaid(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/fee-paid`, { method:'POST' });
+  loadJobs();
+}
+
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str || '';
+  return div.innerHTML;
+}
+
+async function loadSupport(){
+  const messages = await fetch('/api/admin/support').then(r=>r.json());
+  const list = document.getElementById('supportList');
+  if(!messages.length){ list.innerHTML = '<p class="empty">No customer service messages yet.</p>'; return; }
+  list.innerHTML = '';
+  messages.forEach(m=>{
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    card.innerHTML = `
+      <div class="job-head">
+        <strong>${escapeHtml(m.name)}</strong>
+        <span class="pill ${m.status}">${m.status}</span>
+      </div>
+      <div class="job-meta">${[m.address, m.phone].filter(Boolean).map(escapeHtml).join(' · ') || 'No contact info provided'} · ${new Date(m.created_at).toLocaleString()}</div>
+      <p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(m.message)}</p>
+      <button class="btn" onclick="toggleSupport(${m.id})">${m.status === 'resolved' ? 'Mark as new' : 'Mark resolved'}</button>
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function toggleSupport(id){
+  await fetch(`/api/admin/support/${id}/resolve`, { method:'POST' });
+  loadSupport();
+}
+
+function loadAll(){ loadPros(); loadJobs(); loadSupport(); }
 loadAll();
 setInterval(loadJobs, 15000);
 </script>
