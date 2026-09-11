@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const QRCode = require('qrcode');
 const Database = require('better-sqlite3');
 
 const PORT = process.env.PORT || 3000;
@@ -23,15 +24,20 @@ if (TWILIO_ENABLED) {
   console.warn('[sms] Twilio env vars not set — running in DEV MODE. Texts will be logged to the console instead of sent.');
 }
 
-async function sendSMS(to, body) {
+// mediaUrl (optional) sends an MMS with an image attached — e.g. a QR code
+// for a payment link. Twilio needs a publicly reachable HTTPS URL to fetch
+// the image from, not raw image bytes.
+async function sendSMS(to, body, mediaUrl) {
   if (twilioClient) {
     try {
-      await twilioClient.messages.create({ to, from: process.env.TWILIO_FROM_NUMBER, body });
+      const params = { to, from: process.env.TWILIO_FROM_NUMBER, body };
+      if (mediaUrl) params.mediaUrl = [mediaUrl];
+      await twilioClient.messages.create(params);
     } catch (err) {
       console.error(`[sms] Failed to send to ${to}:`, err.message);
     }
   } else {
-    console.log(`\n[DEV SMS] -> ${to}\n${body}\n`);
+    console.log(`\n[DEV SMS] -> ${to}\n${body}${mediaUrl ? `\n[MMS image attached] ${mediaUrl}` : ''}\n`);
   }
 }
 
@@ -60,6 +66,8 @@ db.exec(`
     photo_path TEXT,
     status TEXT NOT NULL DEFAULT 'open', -- open | matched | expired | cancelled
     winning_bid_id INTEGER,
+    fee_amount REAL,
+    fee_paid INTEGER NOT NULL DEFAULT 0,
     closes_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -73,6 +81,16 @@ db.exec(`
     raw_message TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY(job_id) REFERENCES jobs(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS support_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    address TEXT,
+    phone TEXT,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new', -- new | resolved
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
 
@@ -140,6 +158,35 @@ function normalizePhone(raw) {
   if (digits.length === 10) return '+1' + digits;
   if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;
   return raw && raw.startsWith('+') ? raw : '+' + digits;
+}
+
+// Network fee owed by the winning pro, tiered by their winning bid amount.
+// This is collected outside the app (Venmo/Zelle/cash) — the app just
+// tracks whether it's been paid, since that's the enforcement lever
+// (unpaid pros get paused from future job broadcasts via the admin toggle).
+function computeFeeAmount(price) {
+  if (price < 50) return 10;
+  if (price <= 100) return 20;
+  return 30;
+}
+
+// Builds a payment link with the fee amount pre-filled, using whichever
+// service is configured. PAYMENT_LINK_TEMPLATE should contain "{amount}",
+// e.g. "https://paypal.me/YourName/{amount}" or "https://cash.app/$YourTag/{amount}".
+// Returns null if not configured, in which case no QR code is sent.
+function paymentLinkForFee(feeAmount) {
+  const template = process.env.PAYMENT_LINK_TEMPLATE;
+  if (!template) return null;
+  return template.replace('{amount}', feeAmount);
+}
+
+// Builds the absolute URL Twilio will fetch the QR code image from. Needs
+// PUBLIC_BASE_URL (your live domain) since Twilio can't reach localhost or
+// a relative path — it fetches the image itself, independently, over HTTPS.
+function qrImageUrlForJob(jobId) {
+  const base = process.env.PUBLIC_BASE_URL;
+  if (!base) return null;
+  return `${base.replace(/\/$/, '')}/qr/fee/${jobId}.png`;
 }
 
 function jobSummaryText(job) {
@@ -356,13 +403,20 @@ async function selectWinner(jobId) {
   }
 
   const winner = bids[0]; // lowest price wins; swap this line to change the selection rule
-  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ? WHERE id = ?`).run(winner.id, jobId);
+  const feeAmount = computeFeeAmount(winner.price);
+  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ?, fee_amount = ? WHERE id = ?`)
+    .run(winner.id, feeAmount, jobId);
 
   const proLabel = winner.pro_name || winner.pro_phone;
   await sendSMS(job.phone,
     `Your job #${jobId} got a bid! ${proLabel} offered $${winner.price.toFixed(2)}. They'll reach out at ${job.address} soon.`);
+
+  const paymentUrl = paymentLinkForFee(feeAmount);
+  const qrImageUrl = paymentUrl ? qrImageUrlForJob(jobId) : null;
+  const payLine = qrImageUrl ? ' Scan the QR code to pay.' : (paymentUrl ? ` Pay here: ${paymentUrl}` : '');
   await sendSMS(winner.pro_phone,
-    `You won job #${jobId}! Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`);
+    `You won job #${jobId}! A $${feeAmount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`,
+    qrImageUrl);
 
   const losers = bids.slice(1);
   await Promise.all(losers.map(b =>
@@ -412,15 +466,79 @@ app.post('/api/admin/jobs/:id/select', async (req, res) => {
   const bid = db.prepare('SELECT * FROM bids WHERE id = ? AND job_id = ?').get(bidId, job.id);
   if (!bid) return res.status(404).json({ error: 'bid not found' });
 
-  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ? WHERE id = ?`).run(bid.id, job.id);
+  const feeAmount = computeFeeAmount(bid.price);
+  db.prepare(`UPDATE jobs SET status = 'matched', winning_bid_id = ?, fee_amount = ? WHERE id = ?`)
+    .run(bid.id, feeAmount, job.id);
   const proLabel = bid.pro_name || bid.pro_phone;
   await sendSMS(job.phone, `Your job #${job.id} was matched! ${proLabel} offered $${bid.price.toFixed(2)}. They'll reach out soon.`);
-  await sendSMS(bid.pro_phone, `You won job #${job.id}! Homeowner phone: ${job.phone}. Address: ${job.address}.`);
+
+  const paymentUrl = paymentLinkForFee(feeAmount);
+  const qrImageUrl = paymentUrl ? qrImageUrlForJob(job.id) : null;
+  const payLine = qrImageUrl ? ' Scan the QR code to pay.' : (paymentUrl ? ` Pay here: ${paymentUrl}` : '');
+  await sendSMS(bid.pro_phone,
+    `You won job #${job.id}! A $${feeAmount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}.`,
+    qrImageUrl);
 
   const others = db.prepare('SELECT * FROM bids WHERE job_id = ? AND id != ?').all(job.id, bid.id);
   await Promise.all(others.map(b => sendSMS(b.pro_phone, `Job #${job.id} was awarded to another bidder. Thanks for bidding!`)));
 
   res.json({ ok: true });
+});
+
+// Mark a winning pro's network fee as paid (or back to unpaid) — collected
+// outside the app, this just records it so unpaid fees are visible.
+app.post('/api/admin/jobs/:id/fee-paid', (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  db.prepare('UPDATE jobs SET fee_paid = ? WHERE id = ?').run(job.fee_paid ? 0 : 1, job.id);
+  res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id));
+});
+
+// Public, unauthenticated — Twilio fetches this image directly when sending
+// the winner's MMS, so it can't sit behind admin auth. It only exposes a
+// payment link + dollar amount, not any homeowner or pro personal info.
+app.get('/qr/fee/:jobId.png', async (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
+  if (!job || job.fee_amount == null) return res.status(404).send('Not found');
+
+  const paymentUrl = paymentLinkForFee(job.fee_amount);
+  if (!paymentUrl) return res.status(404).send('Payment link not configured');
+
+  res.type('png');
+  QRCode.toFileStream(res, paymentUrl, { width: 300, margin: 2 });
+});
+
+// ---------- Customer service messages ----------
+// Public: anyone can submit a question or concern from the homepage.
+app.post('/api/support', (req, res) => {
+  const name = (req.body.name || '').trim();
+  const address = (req.body.address || '').trim();
+  const phone = (req.body.phone || '').trim();
+  const message = (req.body.message || '').trim();
+
+  if (!name || !message) {
+    return res.status(400).json({ error: 'Name and message are required.' });
+  }
+
+  const info = db.prepare(`
+    INSERT INTO support_messages (name, address, phone, message)
+    VALUES (?, ?, ?, ?)
+  `).run(name, address || null, phone ? normalizePhone(phone) : null, message);
+
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+
+// Admin: view and resolve customer service messages.
+app.get('/api/admin/support', (req, res) => {
+  res.json(db.prepare('SELECT * FROM support_messages ORDER BY created_at DESC').all());
+});
+
+app.post('/api/admin/support/:id/resolve', (req, res) => {
+  const msg = db.prepare('SELECT * FROM support_messages WHERE id = ?').get(req.params.id);
+  if (!msg) return res.status(404).json({ error: 'not found' });
+  db.prepare(`UPDATE support_messages SET status = ? WHERE id = ?`)
+    .run(msg.status === 'resolved' ? 'new' : 'resolved', msg.id);
+  res.json(db.prepare('SELECT * FROM support_messages WHERE id = ?').get(msg.id));
 });
 
 app.listen(PORT, () => {
