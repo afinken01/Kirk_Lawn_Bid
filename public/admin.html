@@ -28,6 +28,7 @@
   .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:0.78rem;font-weight:600;}
   .pill.open{background:#EAF1E2;color:var(--evergreen);}
   .pill.matched{background:#FCEFDD;color:#8A5A16;}
+  .pill.awaiting_confirmation{background:#E9F0FA;color:#2A5C8A;}
   .pill.expired{background:#F1EEE6;color:var(--ink-soft);}
   .pill.new{background:#FCEFDD;color:#8A5A16;}
   .pill.resolved{background:#F1EEE6;color:var(--ink-soft);}
@@ -113,9 +114,19 @@ async function loadJobs(){
         <div class="bid-row">
           <span>${b.pro_name || b.pro_phone} — $${b.price.toFixed(2)}</span>
           ${j.status === 'open' ? `<button class="btn" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
-            : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>' : '')}
+            : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>'
+              : (j.pending_bid_id === b.id ? '<span class="pill awaiting_confirmation">Pending</span>' : ''))}
         </div>`).join('')
       : '<p class="empty">No bids yet.</p>';
+
+    const confirmationHtml = (j.status === 'awaiting_confirmation') ? `
+      <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
+        <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + new Date(j.confirmation_expires_at).toLocaleString() : ''}</span>
+      </div>
+      <div class="bid-row">
+        <button class="btn" onclick="forceConfirm(${j.id})">Force confirm</button>
+        <button class="btn" onclick="forceCancel(${j.id})">Force cancel</button>
+      </div>` : '';
 
     const feeHtml = (j.status === 'matched' && j.fee_amount != null) ? `
       <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
@@ -126,11 +137,12 @@ async function loadJobs(){
     card.innerHTML = `
       <div class="job-head">
         <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
-        <span class="pill ${j.status}">${j.status}</span>
+        <span class="pill ${j.status}">${j.status.replace('_',' ')}</span>
       </div>
       <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ''}</div>
       ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
       ${bidsHtml}
+      ${confirmationHtml}
       ${feeHtml}
     `;
     list.appendChild(card);
@@ -148,6 +160,16 @@ async function selectBid(jobId, bidId){
 async function toggleFeePaid(jobId){
   await fetch(`/api/admin/jobs/${jobId}/fee-paid`, { method:'POST' });
   loadJobs();
+}
+
+async function forceConfirm(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/force-confirm`, { method:'POST' });
+  loadAll();
+}
+
+async function forceCancel(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/force-cancel`, { method:'POST' });
+  loadAll();
 }
 
 function escapeHtml(str){
