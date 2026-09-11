@@ -39,6 +39,13 @@ Open `http://localhost:3000` for the homeowner form, and
 `http://localhost:3000/admin.html` to manage your pro network and watch
 jobs/bids come in.
 
+**The admin dashboard requires a password.** Set `ADMIN_PASSWORD` (and
+optionally `ADMIN_USERNAME`, default `admin`) in `.env` — your browser will
+prompt for these credentials the first time you visit `/admin.html` or any
+`/api/admin/*` route. If `ADMIN_PASSWORD` isn't set, admin access is refused
+entirely rather than left open, so you'll need to set it even for local
+testing.
+
 **You don't need a Twilio account to try it out.** If the Twilio variables in
 `.env` are left blank, the app runs in dev mode: instead of sending real
 texts, it prints them to the server console, so you can see exactly what
@@ -117,10 +124,57 @@ lawn-bid/
 ## Notes on the data model
 
 - **`jobs`** — one row per homeowner request (services, address, phone,
-  photo, status: `open` → `matched` or `expired`).
+  photo, status: `open` → `matched` or `expired`, plus `fee_amount` and
+  `fee_paid` once a job is matched — see "Network fee" below).
 - **`pros`** — your network of lawn care professionals (name, phone,
   active/paused).
 - **`bids`** — one row per SMS bid received, linked to a job.
+- **`support_messages`** — one row per customer service message submitted
+  from the "Customer service" button on the homepage (name, address, phone,
+  message, status: `new` → `resolved`). View and resolve these from the
+  admin dashboard.
+
+## Network fee
+
+Winning pros owe a flat fee, tiered by their winning bid amount:
+
+| Winning bid | Fee |
+|---|---|
+| Under $50 | $10 |
+| $50–$100 | $20 |
+| Over $100 | $30 |
+
+The fee is mentioned in the "You won job #X!" text the pro receives — *"A
+$20 network fee is due in 7 days."* — and tracked per job in the admin
+dashboard (`fee_amount` / `fee_paid`). The app doesn't collect this fee
+itself — you collect it directly (Venmo, Zelle, cash, PayPal, etc.) and mark
+it paid in the admin dashboard once received. The enforcement lever is the
+existing pause toggle on the pro network: a pro who doesn't pay can simply
+be paused, which stops them from receiving future job broadcasts.
+
+To change the fee tiers or amounts, edit `computeFeeAmount()` in
+`server.js`.
+
+### Optional: QR code for payment
+
+If you set `PAYMENT_LINK_TEMPLATE` and `PUBLIC_BASE_URL` in `.env`, the
+winner's text becomes an MMS with a scannable QR code attached, linking
+straight to a pre-filled payment page for that job's exact fee amount:
+
+```
+PAYMENT_LINK_TEMPLATE=https://paypal.me/YourName/{amount}
+PUBLIC_BASE_URL=https://kirkwoodlawnfinder.com
+```
+
+Both PayPal.me and Cash App (`https://cash.app/$YourCashtag/{amount}`)
+support a pre-filled dollar amount directly in the URL; Venmo's web links
+don't reliably support this, so it isn't recommended here. The QR image
+itself is generated on the fly at `/qr/fee/:jobId.png` — this route is
+intentionally public (no admin login required), since Twilio fetches the
+image itself and can't authenticate; it only ever exposes a payment link and
+a dollar amount, nothing about the homeowner or the job. Leave both
+variables blank to skip the QR code — the fee is still mentioned as plain
+text in that case.
 
 Photos are stored on disk under `/uploads` and served statically; for a
 production deployment you'd likely swap this for S3 or similar object
