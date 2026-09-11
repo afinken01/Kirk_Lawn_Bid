@@ -223,6 +223,83 @@
   }
   @keyframes spin{to{transform:rotate(360deg);}}
   .error-text{color:var(--error); font-size:0.83rem; margin-top:6px; display:none;}
+
+  .site-footer{
+    text-align:center;
+    padding:32px 0 8px;
+  }
+  .footer-link{
+    background:none;
+    border:none;
+    color:var(--ink-soft);
+    font-family:'Inter',sans-serif;
+    font-size:0.9rem;
+    text-decoration:underline;
+    cursor:pointer;
+    padding:8px;
+  }
+  .footer-link:hover{color:var(--evergreen);}
+
+  .modal-overlay{
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(20,42,29,0.55);
+    z-index:100;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  }
+  .modal-overlay.show{display:flex;}
+  .modal-card{
+    background:var(--white);
+    border-radius:4px;
+    max-width:440px;
+    width:100%;
+    max-height:90vh;
+    overflow-y:auto;
+    padding:26px 24px 24px;
+    box-shadow:0 20px 50px rgba(20,42,29,0.3);
+  }
+  .modal-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:18px;
+  }
+  .modal-head h2{
+    font-family:'Zilla Slab',serif;
+    font-size:1.15rem;
+    margin:0;
+  }
+  .modal-close{
+    background:none;
+    border:none;
+    font-size:1.6rem;
+    line-height:1;
+    color:var(--ink-soft);
+    cursor:pointer;
+    padding:0 4px;
+  }
+  .modal-close:hover{color:var(--ink);}
+  #supportForm textarea{
+    width:100%;
+    padding:12px 14px;
+    border:1.5px solid var(--paper-line);
+    border-radius:3px;
+    font-family:'Inter',sans-serif;
+    font-size:1rem;
+    background:var(--white);
+    color:var(--ink);
+    resize:vertical;
+    min-height:90px;
+  }
+  #supportForm textarea:focus{
+    outline:none;
+    border-color:var(--evergreen);
+    box-shadow:0 0 0 3px rgba(31,61,43,0.12);
+  }
+
   @media (max-width:480px){
     .checks{grid-template-columns:1fr;}
     h1{font-size:1.9rem;}
@@ -308,6 +385,44 @@
     </form>
 
     <div class="status-panel" id="statusPanel"></div>
+  </div>
+
+  <footer class="site-footer">
+    <button type="button" class="footer-link" id="supportOpenBtn">Customer service</button>
+    <span style="color:var(--paper-line);">&middot;</span>
+    <a class="footer-link" href="/privacy.html">Privacy Policy</a>
+    <span style="color:var(--paper-line);">&middot;</span>
+    <a class="footer-link" href="/terms.html">Terms and Conditions</a>
+  </footer>
+</div>
+
+<div class="modal-overlay" id="supportOverlay">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Contact customer service</h2>
+      <button type="button" class="modal-close" id="supportCloseBtn" aria-label="Close">&times;</button>
+    </div>
+    <form id="supportForm">
+      <div class="field">
+        <label class="field-label" for="supportName">Name</label>
+        <input type="text" id="supportName" name="name" required>
+      </div>
+      <div class="field">
+        <label class="field-label" for="supportAddress">Address <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+        <input type="text" id="supportAddress" name="address">
+      </div>
+      <div class="field">
+        <label class="field-label" for="supportPhone">Phone number <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+        <input type="tel" id="supportPhone" name="phone">
+      </div>
+      <div class="field">
+        <label class="field-label" for="supportMessage">Question or concern</label>
+        <textarea id="supportMessage" name="message" placeholder="Tell us what's going on..." required></textarea>
+        <div class="error-text" id="supportError">Please enter your name and a message.</div>
+      </div>
+      <button type="submit" class="stamp" id="supportSubmitBtn">Send message</button>
+      <div class="status-panel" id="supportStatusPanel"></div>
+    </form>
   </div>
 </div>
 
@@ -396,6 +511,65 @@
       showStatus('error', 'Something went wrong', 'Your request wasn\'t sent. Please try again in a moment.');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Send to local crews';
+    }
+  });
+
+  // ---------- Customer service modal ----------
+  const supportOverlay = document.getElementById('supportOverlay');
+  const supportOpenBtn = document.getElementById('supportOpenBtn');
+  const supportCloseBtn = document.getElementById('supportCloseBtn');
+  const supportForm = document.getElementById('supportForm');
+  const supportSubmitBtn = document.getElementById('supportSubmitBtn');
+  const supportStatusPanel = document.getElementById('supportStatusPanel');
+
+  function openSupportModal(){
+    supportOverlay.classList.add('show');
+  }
+  function closeSupportModal(){
+    supportOverlay.classList.remove('show');
+  }
+
+  supportOpenBtn.addEventListener('click', openSupportModal);
+  supportCloseBtn.addEventListener('click', closeSupportModal);
+  supportOverlay.addEventListener('click', (e) => {
+    if(e.target === supportOverlay) closeSupportModal();
+  });
+
+  function showSupportStatus(kind, title, message){
+    supportStatusPanel.className = 'status-panel show ' + kind;
+    supportStatusPanel.innerHTML = `<h3>${title}</h3><p>${message}</p>`;
+  }
+
+  supportForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const name = document.getElementById('supportName').value.trim();
+    const address = document.getElementById('supportAddress').value.trim();
+    const phone = document.getElementById('supportPhone').value.trim();
+    const message = document.getElementById('supportMessage').value.trim();
+
+    const invalid = !name || !message;
+    document.getElementById('supportError').style.display = invalid ? 'block' : 'none';
+    if(invalid) return;
+
+    supportSubmitBtn.disabled = true;
+    supportSubmitBtn.textContent = 'Sending...';
+
+    try {
+      const res = await fetch('/api/support', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name, address, phone, message })
+      });
+      if(!res.ok) throw new Error('Request failed');
+      showSupportStatus('pending', 'Message sent', "Thanks — we'll get back to you as soon as we can.");
+      supportForm.reset();
+      supportSubmitBtn.textContent = 'Send message';
+      setTimeout(() => { closeSupportModal(); supportStatusPanel.className = 'status-panel'; }, 2000);
+    } catch(err) {
+      showSupportStatus('error', 'Something went wrong', "Your message wasn't sent. Please try again in a moment.");
+      supportSubmitBtn.disabled = false;
+      supportSubmitBtn.textContent = 'Send message';
     }
   });
 
