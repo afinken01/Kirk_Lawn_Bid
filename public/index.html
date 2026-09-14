@@ -388,6 +388,8 @@
   </div>
 
   <footer class="site-footer">
+    <button type="button" class="footer-link" id="proSignupOpenBtn">Join our network of pros</button>
+    <span style="color:var(--paper-line);">&middot;</span>
     <button type="button" class="footer-link" id="supportOpenBtn">Customer service</button>
     <span style="color:var(--paper-line);">&middot;</span>
     <a class="footer-link" href="/privacy.html">Privacy Policy</a>
@@ -422,6 +424,28 @@
       </div>
       <button type="submit" class="stamp" id="supportSubmitBtn">Send message</button>
       <div class="status-panel" id="supportStatusPanel"></div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="proSignupOverlay">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Join our network of pros</h2>
+      <button type="button" class="modal-close" id="proSignupCloseBtn" aria-label="Close">&times;</button>
+    </div>
+    <form id="proSignupForm">
+      <div class="field">
+        <label class="field-label" for="proBusinessName">Business name</label>
+        <input type="text" id="proBusinessName" name="businessName" required>
+      </div>
+      <div class="field">
+        <label class="field-label" for="proPhoneInput">Phone number</label>
+        <input type="tel" id="proPhoneInput" name="phone" required>
+        <div class="error-text" id="proSignupError">Please enter your business name and phone number.</div>
+      </div>
+      <button type="submit" class="stamp" id="proSignupSubmitBtn">Request to join</button>
+      <div class="status-panel" id="proSignupStatusPanel"></div>
     </form>
   </div>
 </div>
@@ -570,6 +594,63 @@
       showSupportStatus('error', 'Something went wrong', "Your message wasn't sent. Please try again in a moment.");
       supportSubmitBtn.disabled = false;
       supportSubmitBtn.textContent = 'Send message';
+    }
+  });
+
+  // ---------- Join our network of pros modal ----------
+  const proSignupOverlay = document.getElementById('proSignupOverlay');
+  const proSignupOpenBtn = document.getElementById('proSignupOpenBtn');
+  const proSignupCloseBtn = document.getElementById('proSignupCloseBtn');
+  const proSignupForm = document.getElementById('proSignupForm');
+  const proSignupSubmitBtn = document.getElementById('proSignupSubmitBtn');
+  const proSignupStatusPanel = document.getElementById('proSignupStatusPanel');
+
+  function openProSignupModal(){
+    proSignupOverlay.classList.add('show');
+  }
+  function closeProSignupModal(){
+    proSignupOverlay.classList.remove('show');
+  }
+
+  proSignupOpenBtn.addEventListener('click', openProSignupModal);
+  proSignupCloseBtn.addEventListener('click', closeProSignupModal);
+  proSignupOverlay.addEventListener('click', (e) => {
+    if(e.target === proSignupOverlay) closeProSignupModal();
+  });
+
+  function showProSignupStatus(kind, title, message){
+    proSignupStatusPanel.className = 'status-panel show ' + kind;
+    proSignupStatusPanel.innerHTML = `<h3>${title}</h3><p>${message}</p>`;
+  }
+
+  proSignupForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const businessName = document.getElementById('proBusinessName').value.trim();
+    const phone = document.getElementById('proPhoneInput').value.trim();
+
+    const invalid = !businessName || phone.replace(/\D/g,'').length < 10;
+    document.getElementById('proSignupError').style.display = invalid ? 'block' : 'none';
+    if(invalid) return;
+
+    proSignupSubmitBtn.disabled = true;
+    proSignupSubmitBtn.textContent = 'Sending...';
+
+    try {
+      const res = await fetch('/api/pro-signup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ businessName, phone })
+      });
+      if(!res.ok) throw new Error('Request failed');
+      showProSignupStatus('pending', 'Request sent', "Thanks for your interest — we'll be in touch soon.");
+      proSignupForm.reset();
+      proSignupSubmitBtn.textContent = 'Request to join';
+      setTimeout(() => { closeProSignupModal(); proSignupStatusPanel.className = 'status-panel'; }, 2000);
+    } catch(err) {
+      showProSignupStatus('error', 'Something went wrong', "Your request wasn't sent. Please try again in a moment.");
+      proSignupSubmitBtn.disabled = false;
+      proSignupSubmitBtn.textContent = 'Request to join';
     }
   });
 
