@@ -165,6 +165,34 @@ lawn-bid/
   from the "Customer service" button on the homepage (name, address, phone,
   message, status: `new` → `resolved`). View and resolve these from the
   admin dashboard.
+- **`pro_signups`** — one row per request from the "Join our network of
+  pros" button (business name, phone, status: `new` → `added`). Emails you
+  directly when submitted, and shows up in the admin dashboard with an "Add
+  to network" button that quick-fills the existing pro-network form so you
+  don't have to retype anything.
+
+## Email notifications
+
+The "Join our network of pros" button on the homepage collects a business
+name and phone number, saves it to the database, and emails you so you
+don't have to keep checking the dashboard. Configure it with any SMTP
+provider in `.env`:
+
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=youraddress@gmail.com
+SMTP_PASS=your-app-password
+EMAIL_FROM=youraddress@gmail.com
+EMAIL_TO=youraddress@gmail.com
+```
+
+For Gmail, `SMTP_PASS` needs to be an
+[app password](https://myaccount.google.com/apppasswords), not your regular
+Gmail password. Leave these blank to run in dev mode — signup requests are
+still saved and visible in the admin dashboard, they just aren't emailed;
+the email that would have been sent is printed to the server console
+instead.
 
 ## Network fee
 
