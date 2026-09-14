@@ -282,7 +282,7 @@
     padding:0 4px;
   }
   .modal-close:hover{color:var(--ink);}
-  #supportForm textarea{
+  #supportForm textarea, #proSignupForm textarea{
     width:100%;
     padding:12px 14px;
     border:1.5px solid var(--paper-line);
@@ -294,7 +294,7 @@
     resize:vertical;
     min-height:90px;
   }
-  #supportForm textarea:focus{
+  #supportForm textarea:focus, #proSignupForm textarea:focus{
     outline:none;
     border-color:var(--evergreen);
     box-shadow:0 0 0 3px rgba(31,61,43,0.12);
@@ -434,7 +434,7 @@
       <h2>Join our network of pros</h2>
       <button type="button" class="modal-close" id="proSignupCloseBtn" aria-label="Close">&times;</button>
     </div>
-    <p class="hint" style="margin:-8px 0 18px;">When you join our network, you will receive a text message when a homeowner in your area visits our website and asks for a bid on their lawncare. That text message will include a description of the lawncare job. You can either respond to the text with a bid, request to exit the network by typing "stop," or do nothing. Doing nothing will not prevent future requests from coming to you.</p>
+    <p class="hint" style="margin:-8px 0 18px;">When you join our network, you will receive a text message when a homeowner in your area visits our website and asks for a bid on their lawncare. That text message will include a description of the lawncare job. You can either respond to the text with a bid, request to exit the network by typing "stop," or do nothing. Doing nothing will not prevent future requests from coming to you. Thank you, and please reach out if you have any questions.</p>
     <form id="proSignupForm">
       <div class="field">
         <label class="field-label" for="proBusinessName">Business name</label>
@@ -444,6 +444,10 @@
         <label class="field-label" for="proPhoneInput">Phone number</label>
         <input type="tel" id="proPhoneInput" name="phone" required>
         <div class="error-text" id="proSignupError">Please enter your business name and phone number.</div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="proNotesInput">Questions or comments <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+        <textarea id="proNotesInput" name="notes" placeholder="Anything you'd like us to know..."></textarea>
       </div>
       <button type="submit" class="stamp" id="proSignupSubmitBtn">Request to join</button>
       <div class="status-panel" id="proSignupStatusPanel"></div>
@@ -629,6 +633,7 @@
 
     const businessName = document.getElementById('proBusinessName').value.trim();
     const phone = document.getElementById('proPhoneInput').value.trim();
+    const notes = document.getElementById('proNotesInput').value.trim();
 
     const invalid = !businessName || phone.replace(/\D/g,'').length < 10;
     document.getElementById('proSignupError').style.display = invalid ? 'block' : 'none';
@@ -641,7 +646,7 @@
       const res = await fetch('/api/pro-signup', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ businessName, phone })
+        body: JSON.stringify({ businessName, phone, notes })
       });
       if(!res.ok) throw new Error('Request failed');
       showProSignupStatus('pending', 'Request sent', "Thanks for your interest — we'll be in touch soon.");
