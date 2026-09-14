@@ -134,6 +134,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     business_name TEXT NOT NULL,
     phone TEXT NOT NULL,
+    notes TEXT,
     status TEXT NOT NULL DEFAULT 'new', -- new | added
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -722,6 +723,7 @@ app.post('/api/admin/support/:id/resolve', (req, res) => {
 app.post('/api/pro-signup', async (req, res) => {
   const businessName = (req.body.businessName || '').trim();
   const phone = (req.body.phone || '').trim();
+  const notes = (req.body.notes || '').trim();
 
   if (!businessName || !phone) {
     return res.status(400).json({ error: 'Business name and phone number are required.' });
@@ -729,13 +731,14 @@ app.post('/api/pro-signup', async (req, res) => {
 
   const normalizedPhone = normalizePhone(phone);
   const info = db.prepare(`
-    INSERT INTO pro_signups (business_name, phone)
-    VALUES (?, ?)
-  `).run(businessName, normalizedPhone);
+    INSERT INTO pro_signups (business_name, phone, notes)
+    VALUES (?, ?, ?)
+  `).run(businessName, normalizedPhone, notes || null);
 
+  const notesLine = notes ? `\n\nQuestions/comments: ${notes}` : '';
   await sendEmail(
     `New pro network signup: ${businessName}`,
-    `${businessName} wants to join the Kirkwood lawn care network.\n\nPhone: ${normalizedPhone}\n\nAdd them from the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
+    `${businessName} wants to join the Kirkwood lawn care network.\n\nPhone: ${normalizedPhone}${notesLine}\n\nAdd them from the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
   );
 
   res.json({ ok: true, id: info.lastInsertRowid });
