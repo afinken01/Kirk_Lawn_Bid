@@ -58,7 +58,7 @@
   </section>
 
   <section>
-    <h2>Pro network signup requests <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <h2>Pro network signup requests <span class="toggle-link" style="margin-left:8px;" onclick="toggleSignupFilter()" id="signupFilterToggle">show all</span> <span class="refresh" onclick="loadAll()">refresh</span></h2>
     <div id="proSignupsList"><p class="empty">Loading...</p></div>
   </section>
 
@@ -209,12 +209,26 @@ async function toggleSupport(id){
   loadSupport();
 }
 
+let showAllProSignups = false;
+
+function toggleSignupFilter(){
+  showAllProSignups = !showAllProSignups;
+  document.getElementById('signupFilterToggle').textContent = showAllProSignups ? 'show new only' : 'show all';
+  loadProSignups();
+}
+
 async function loadProSignups(){
   const signups = await fetch('/api/admin/pro-signups').then(r=>r.json());
+  const visible = showAllProSignups ? signups : signups.filter(s => s.status !== 'added');
   const list = document.getElementById('proSignupsList');
-  if(!signups.length){ list.innerHTML = '<p class="empty">No signup requests yet.</p>'; return; }
+  if(!visible.length){
+    list.innerHTML = showAllProSignups
+      ? '<p class="empty">No signup requests yet.</p>'
+      : '<p class="empty">No new signup requests. <span class="toggle-link" onclick="toggleSignupFilter()">Show all</span></p>';
+    return;
+  }
   list.innerHTML = '';
-  signups.forEach(s=>{
+  visible.forEach(s=>{
     const card = document.createElement('div');
     card.className = 'job-card';
     card.innerHTML = `
