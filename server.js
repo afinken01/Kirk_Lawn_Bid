@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
+const nodemailer = require('nodemailer');
 const Database = require('better-sqlite3');
 
 const PORT = process.env.PORT || 3000;
@@ -15,6 +16,7 @@ const SOFT_CLOSE_THRESHOLD_MINUTES = parseFloat(process.env.SOFT_CLOSE_THRESHOLD
 const SOFT_CLOSE_EXTENSION_MINUTES = parseFloat(process.env.SOFT_CLOSE_EXTENSION_MINUTES || '5');
 const CONFIRMATION_WINDOW_MINUTES = parseFloat(process.env.CONFIRMATION_WINDOW_MINUTES || '120');
 const TWILIO_ENABLED = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+const EMAIL_ENABLED = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.EMAIL_TO);
 
 // ---------- Twilio client (falls back to console logging if not configured) ----------
 let twilioClient = null;
@@ -39,6 +41,38 @@ async function sendSMS(to, body, mediaUrl) {
     }
   } else {
     console.log(`\n[DEV SMS] -> ${to}\n${body}${mediaUrl ? `\n[MMS image attached] ${mediaUrl}` : ''}\n`);
+  }
+}
+
+// ---------- Email (falls back to console logging if not configured) ----------
+// Works with any SMTP provider — Gmail with an app password, or a
+// transactional email service. No provider lock-in.
+let emailTransporter = null;
+if (EMAIL_ENABLED) {
+  emailTransporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: process.env.SMTP_PORT === '465',
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  });
+} else {
+  console.warn('[email] SMTP env vars not set — running in DEV MODE. Emails will be logged to the console instead of sent.');
+}
+
+async function sendEmail(subject, text) {
+  if (emailTransporter) {
+    try {
+      await emailTransporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: process.env.EMAIL_TO,
+        subject,
+        text,
+      });
+    } catch (err) {
+      console.error('[email] Failed to send:', err.message);
+    }
+  } else {
+    console.log(`\n[DEV EMAIL] -> ${process.env.EMAIL_TO || '(no EMAIL_TO set)'}\nSubject: ${subject}\n${text}\n`);
   }
 }
 
@@ -93,6 +127,14 @@ db.exec(`
     phone TEXT,
     message TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'new', -- new | resolved
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS pro_signups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new', -- new | added
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
@@ -671,6 +713,45 @@ app.post('/api/admin/support/:id/resolve', (req, res) => {
   db.prepare(`UPDATE support_messages SET status = ? WHERE id = ?`)
     .run(msg.status === 'resolved' ? 'new' : 'resolved', msg.id);
   res.json(db.prepare('SELECT * FROM support_messages WHERE id = ?').get(msg.id));
+});
+
+// ---------- Pro network signups ----------
+// Public: a lawn care pro asks to join the network. Stored in the database
+// (so it's never lost even if email delivery fails) and also emailed to
+// you directly for a fast heads-up.
+app.post('/api/pro-signup', async (req, res) => {
+  const businessName = (req.body.businessName || '').trim();
+  const phone = (req.body.phone || '').trim();
+
+  if (!businessName || !phone) {
+    return res.status(400).json({ error: 'Business name and phone number are required.' });
+  }
+
+  const normalizedPhone = normalizePhone(phone);
+  const info = db.prepare(`
+    INSERT INTO pro_signups (business_name, phone)
+    VALUES (?, ?)
+  `).run(businessName, normalizedPhone);
+
+  await sendEmail(
+    `New pro network signup: ${businessName}`,
+    `${businessName} wants to join the Kirkwood lawn care network.\n\nPhone: ${normalizedPhone}\n\nAdd them from the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
+  );
+
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+
+// Admin: view and resolve pro signup requests.
+app.get('/api/admin/pro-signups', (req, res) => {
+  res.json(db.prepare('SELECT * FROM pro_signups ORDER BY created_at DESC').all());
+});
+
+app.post('/api/admin/pro-signups/:id/resolve', (req, res) => {
+  const signup = db.prepare('SELECT * FROM pro_signups WHERE id = ?').get(req.params.id);
+  if (!signup) return res.status(404).json({ error: 'not found' });
+  db.prepare(`UPDATE pro_signups SET status = ? WHERE id = ?`)
+    .run(signup.status === 'added' ? 'new' : 'added', signup.id);
+  res.json(db.prepare('SELECT * FROM pro_signups WHERE id = ?').get(signup.id));
 });
 
 app.listen(PORT, () => {
