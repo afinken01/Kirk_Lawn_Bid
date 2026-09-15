@@ -104,7 +104,11 @@ async function sendEmail(subject, text) {
 }
 
 // ---------- Database ----------
-const dbPath = path.join(__dirname, 'data', 'lawnbid.db');
+// Lives under STORAGE_DIR (default: ./storage) alongside /uploads, so a
+// single Render persistent disk mounted at that one path covers both —
+// Render only allows one disk per service, with one mount path.
+const STORAGE_DIR = process.env.STORAGE_DIR || path.join(__dirname, 'storage');
+const dbPath = path.join(STORAGE_DIR, 'data', 'lawnbid.db');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
@@ -168,7 +172,7 @@ db.exec(`
 `);
 
 // ---------- File uploads ----------
-const uploadDir = path.join(__dirname, 'uploads');
+const uploadDir = path.join(STORAGE_DIR, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
   storage: multer.diskStorage({
