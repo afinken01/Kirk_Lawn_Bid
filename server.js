@@ -16,6 +16,7 @@ const SOFT_CLOSE_THRESHOLD_MINUTES = parseFloat(process.env.SOFT_CLOSE_THRESHOLD
 const SOFT_CLOSE_EXTENSION_MINUTES = parseFloat(process.env.SOFT_CLOSE_EXTENSION_MINUTES || '5');
 const CONFIRMATION_WINDOW_MINUTES = parseFloat(process.env.CONFIRMATION_WINDOW_MINUTES || '120');
 const TWILIO_ENABLED = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+const SMS_GATEWAY_ENABLED = !TWILIO_ENABLED && !!(process.env.SMS_GATEWAY_USERNAME && process.env.SMS_GATEWAY_PASSWORD);
 const EMAIL_ENABLED = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.EMAIL_TO);
 
 // ---------- Twilio client (falls back to console logging if not configured) ----------
@@ -23,13 +24,17 @@ let twilioClient = null;
 if (TWILIO_ENABLED) {
   const twilio = require('twilio');
   twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+} else if (SMS_GATEWAY_ENABLED) {
+  console.warn('[sms] Using SMS Gateway for Android (sms-gate.app) — no MMS/photo support with this backend.');
 } else {
-  console.warn('[sms] Twilio env vars not set — running in DEV MODE. Texts will be logged to the console instead of sent.');
+  console.warn('[sms] No SMS backend configured — running in DEV MODE. Texts will be logged to the console instead of sent.');
 }
 
 // mediaUrl (optional) sends an MMS with an image attached — e.g. a QR code
-// for a payment link. Twilio needs a publicly reachable HTTPS URL to fetch
-// the image from, not raw image bytes.
+// for a payment link. Only supported on Twilio; SMS Gateway for Android has
+// no outbound MMS support, so mediaUrl is silently ignored on that backend
+// (the calling code already falls back to a plain-text payment link when no
+// QR image is available, so nothing breaks — the QR just never appears).
 async function sendSMS(to, body, mediaUrl) {
   if (twilioClient) {
     try {
@@ -38,6 +43,28 @@ async function sendSMS(to, body, mediaUrl) {
       await twilioClient.messages.create(params);
     } catch (err) {
       console.error(`[sms] Failed to send to ${to}:`, err.message);
+    }
+  } else if (SMS_GATEWAY_ENABLED) {
+    try {
+      const res = await fetch('https://api.sms-gate.app/3rdparty/v1/messages?skipPhoneValidation=true', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + Buffer.from(
+            `${process.env.SMS_GATEWAY_USERNAME}:${process.env.SMS_GATEWAY_PASSWORD}`
+          ).toString('base64'),
+        },
+        body: JSON.stringify({
+          textMessage: { text: body },
+          phoneNumbers: [to],
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error(`[sms] SMS Gateway failed to send to ${to}: ${res.status} ${errText}`);
+      }
+    } catch (err) {
+      console.error(`[sms] SMS Gateway request failed for ${to}:`, err.message);
     }
   } else {
     console.log(`\n[DEV SMS] -> ${to}\n${body}${mediaUrl ? `\n[MMS image attached] ${mediaUrl}` : ''}\n`);
@@ -157,7 +184,9 @@ const upload = multer({
 
 // ---------- App ----------
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
+}));
 app.use(express.urlencoded({ extended: false })); // needed for Twilio's inbound webhook
 app.use('/uploads', express.static(uploadDir));
 
@@ -429,76 +458,127 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
   }
 });
 
-// ---------- 4: pros bid by replying to the text (Twilio inbound webhook) ----------
-app.post('/api/sms-inbound', async (req, res) => {
-  const from = req.body.From;
-  const body = (req.body.Body || '').trim();
+// ---------- 4: pros bid by replying to the text ----------
+// Shared by both inbound webhook shapes (Twilio's synchronous-reply style
+// and SMS Gateway for Android's fire-a-separate-outbound-text style) so the
+// bid-parsing and confirmation logic lives in exactly one place.
+async function processInboundMessage(from, body) {
+  body = (body || '').trim();
 
   // Matches "BID 12 85", "bid #12 $85.50", "Bid: 12 - 85" etc.
   const match = body.match(/bid\D*(\d+)\D+\$?(\d+(?:\.\d{1,2})?)/i);
 
-  let reply;
   if (match) {
     const jobId = parseInt(match[1], 10);
     const price = parseFloat(match[2]);
     const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
 
     if (!job) {
-      reply = `We don't have a job #${jobId} on file.`;
-    } else if (job.status !== 'open') {
-      reply = `Job #${jobId} is already closed — thanks for the interest.`;
-    } else {
-      const pro = db.prepare('SELECT * FROM pros WHERE phone = ?').get(from);
-      db.prepare(`
-        INSERT INTO bids (job_id, pro_phone, pro_name, price, raw_message)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(jobId, from, pro ? pro.name : null, price, body);
-
-      const now = new Date();
-      const extended = maybeExtendWindow(job, now);
-
-      // Bids stay sealed — pros never see who else bid or the full list,
-      // just whether they're currently in front, to keep some competitive
-      // pressure without opening the door to price collusion.
-      const lowest = db.prepare('SELECT MIN(price) AS min_price FROM bids WHERE job_id = ?').get(jobId).min_price;
-
-      if (price <= lowest) {
-        reply = `Got it — your bid of $${price.toFixed(2)} on job #${jobId} is in, and it's currently the lowest bid. We'll text you if you're selected.`;
-      } else {
-        reply = `Got it — your bid of $${price.toFixed(2)} on job #${jobId} is in. Current lowest bid is $${lowest.toFixed(2)}. You can send a new bid anytime before we pick a winner, e.g. BID ${jobId} 65`;
-      }
-      if (extended) {
-        reply += ` Bidding on this job was just extended by ${SOFT_CLOSE_EXTENSION_MINUTES} minutes.`;
-      }
+      return `We don't have a job #${jobId} on file.`;
     }
-  } else {
-    // Not a bid — check whether this number has a job waiting on a Y/N
-    // confirmation reply (a homeowner deciding whether to accept a bid).
-    const normalizedFrom = normalizePhone(from);
-    const pendingJob = db.prepare(`
-      SELECT * FROM jobs WHERE phone = ? AND status = 'awaiting_confirmation'
-      ORDER BY created_at DESC LIMIT 1
-    `).get(normalizedFrom);
-    const normalizedBody = body.toLowerCase();
+    if (job.status !== 'open') {
+      return `Job #${jobId} is already closed — thanks for the interest.`;
+    }
 
-    if (pendingJob && (normalizedBody === 'y' || normalizedBody === 'yes')) {
-      const winner = await confirmBid(pendingJob.id);
-      const proLabel = winner ? (winner.pro_name || winner.pro_phone) : 'the pro';
-      reply = `Great — we've confirmed the bid from ${proLabel} for job #${pendingJob.id}. They'll be in touch soon.`;
-    } else if (pendingJob && (normalizedBody === 'n' || normalizedBody === 'no')) {
-      await cancelPendingJob(pendingJob.id, 'declined');
-      reply = `Got it — we've cancelled job #${pendingJob.id}. Let us know if you'd like to submit a new request.`;
-    } else if (pendingJob) {
-      const bid = db.prepare('SELECT * FROM bids WHERE id = ?').get(pendingJob.pending_bid_id);
-      const proLabel = bid ? (bid.pro_name || bid.pro_phone) : 'the pro';
-      const priceLabel = bid ? `$${bid.price.toFixed(2)}` : 'the';
-      reply = `We're still waiting on your response for job #${pendingJob.id} — reply Y to accept the ${priceLabel} bid from ${proLabel}, or N to cancel.`;
+    const pro = db.prepare('SELECT * FROM pros WHERE phone = ?').get(from);
+    db.prepare(`
+      INSERT INTO bids (job_id, pro_phone, pro_name, price, raw_message)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(jobId, from, pro ? pro.name : null, price, body);
+
+    const now = new Date();
+    const extended = maybeExtendWindow(job, now);
+
+    // Bids stay sealed — pros never see who else bid or the full list,
+    // just whether they're currently in front, to keep some competitive
+    // pressure without opening the door to price collusion.
+    const lowest = db.prepare('SELECT MIN(price) AS min_price FROM bids WHERE job_id = ?').get(jobId).min_price;
+
+    let reply;
+    if (price <= lowest) {
+      reply = `Got it — your bid of $${price.toFixed(2)} on job #${jobId} is in, and it's currently the lowest bid. We'll text you if you're selected.`;
     } else {
-      reply = `Sorry, we couldn't read that. Reply like: BID <job number> <price>, e.g. BID 12 85`;
+      reply = `Got it — your bid of $${price.toFixed(2)} on job #${jobId} is in. Current lowest bid is $${lowest.toFixed(2)}. You can send a new bid anytime before we pick a winner, e.g. BID ${jobId} 65`;
+    }
+    if (extended) {
+      reply += ` Bidding on this job was just extended by ${SOFT_CLOSE_EXTENSION_MINUTES} minutes.`;
+    }
+    return reply;
+  }
+
+  // Not a bid — check whether this number has a job waiting on a Y/N
+  // confirmation reply (a homeowner deciding whether to accept a bid).
+  const normalizedFrom = normalizePhone(from);
+  const pendingJob = db.prepare(`
+    SELECT * FROM jobs WHERE phone = ? AND status = 'awaiting_confirmation'
+    ORDER BY created_at DESC LIMIT 1
+  `).get(normalizedFrom);
+  const normalizedBody = body.toLowerCase();
+
+  if (pendingJob && (normalizedBody === 'y' || normalizedBody === 'yes')) {
+    const winner = await confirmBid(pendingJob.id);
+    const proLabel = winner ? (winner.pro_name || winner.pro_phone) : 'the pro';
+    return `Great — we've confirmed the bid from ${proLabel} for job #${pendingJob.id}. They'll be in touch soon.`;
+  }
+  if (pendingJob && (normalizedBody === 'n' || normalizedBody === 'no')) {
+    await cancelPendingJob(pendingJob.id, 'declined');
+    return `Got it — we've cancelled job #${pendingJob.id}. Let us know if you'd like to submit a new request.`;
+  }
+  if (pendingJob) {
+    const bid = db.prepare('SELECT * FROM bids WHERE id = ?').get(pendingJob.pending_bid_id);
+    const proLabel = bid ? (bid.pro_name || bid.pro_phone) : 'the pro';
+    const priceLabel = bid ? `$${bid.price.toFixed(2)}` : 'the';
+    return `We're still waiting on your response for job #${pendingJob.id} — reply Y to accept the ${priceLabel} bid from ${proLabel}, or N to cancel.`;
+  }
+  return `Sorry, we couldn't read that. Reply like: BID <job number> <price>, e.g. BID 12 85`;
+}
+
+// Twilio inbound webhook — replies synchronously via TwiML in the response.
+app.post('/api/sms-inbound', async (req, res) => {
+  const reply = await processInboundMessage(req.body.From, req.body.Body);
+  res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(reply)}</Message></Response>`);
+});
+
+// SMS Gateway for Android webhook — this backend has no synchronous-reply
+// mechanism, so the reply is sent as a separate outbound text instead.
+// HMAC-verified using the signing key from Settings > Webhooks > Signing Key
+// in the app, so a request can't be spoofed by someone who finds this URL.
+app.post('/api/sms-gateway-inbound', async (req, res) => {
+  const signingKey = process.env.SMS_GATEWAY_SIGNING_KEY;
+  if (signingKey) {
+    const signature = req.headers['x-signature'];
+    const timestamp = req.headers['x-timestamp'];
+    if (!signature || !timestamp) {
+      return res.status(401).send('Missing signature.');
+    }
+    const expected = crypto
+      .createHmac('sha256', signingKey)
+      .update(req.rawBody + timestamp)
+      .digest('hex');
+    const sigBuf = Buffer.from(String(signature).trim().toLowerCase(), 'hex');
+    const expectedBuf = Buffer.from(expected, 'hex');
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return res.status(401).send('Invalid signature.');
     }
   }
 
-  res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(reply)}</Message></Response>`);
+  // Always acknowledge quickly — the gateway retries with exponential
+  // backoff for ~2 days if it doesn't get a 2xx, which would otherwise
+  // resend the same message repeatedly.
+  res.status(200).send('ok');
+
+  if (req.body.event !== 'sms:received') return; // ignore sent/delivered/failed/etc.
+
+  const from = req.body.payload && req.body.payload.sender;
+  const body = req.body.payload && req.body.payload.message;
+  if (!from || !body) return;
+
+  try {
+    const reply = await processInboundMessage(from, body);
+    await sendSMS(from, reply);
+  } catch (err) {
+    console.error('[sms-gateway-inbound] Failed to process message:', err.message);
+  }
 });
 
 function escapeXml(str) {
@@ -760,6 +840,6 @@ app.post('/api/admin/pro-signups/:id/resolve', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Lawn Bid app running at http://localhost:${PORT}`);
   console.log(`Admin dashboard at http://localhost:${PORT}/admin.html`);
-  if (!TWILIO_ENABLED) console.log('Running without Twilio — SMS will print to this console.');
+  if (!TWILIO_ENABLED && !SMS_GATEWAY_ENABLED) console.log('No SMS backend configured — texts will print to this console.');
   recoverOpenJobTimers();
 });
