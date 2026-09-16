@@ -146,7 +146,7 @@ async function loadJobs(){
         <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
         <span class="pill ${j.status}">${j.status.replace('_',' ')}</span>
       </div>
-      <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ''}</div>
+      <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ' · pros notified at ' + new Date(j.broadcast_at).toLocaleString()) : ''}</div>
       ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
       ${bidsHtml}
       ${confirmationHtml}
