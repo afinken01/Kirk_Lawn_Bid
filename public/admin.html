@@ -52,9 +52,10 @@
     <form class="pro-form" id="proForm">
       <input type="text" id="proName" placeholder="Pro or crew name" required>
       <input type="tel" id="proPhone" placeholder="Phone number" required>
+      <input type="email" id="proEmail" placeholder="Email (optional)">
       <button type="submit">Add to network</button>
     </form>
-    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
   <section>
@@ -78,10 +79,10 @@
 async function loadPros(){
   const pros = await fetch('/api/admin/pros').then(r=>r.json());
   const tbody = document.querySelector('#prosTable tbody');
-  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="4" class="empty">No pros added yet.</td></tr>';
+  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="5" class="empty">No pros added yet.</td></tr>';
   pros.forEach(p=>{
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${p.name}</td><td>${p.phone}</td>
+    tr.innerHTML = `<td>${p.name}</td><td>${p.phone}</td><td>${p.email || '—'}</td>
       <td>${p.active ? 'Active' : 'Paused'}</td>
       <td><span class="toggle-link" onclick="togglePro(${p.id})">${p.active ? 'pause' : 'resume'}</span></td>`;
     tbody.appendChild(tr);
@@ -97,10 +98,11 @@ document.getElementById('proForm').addEventListener('submit', async e=>{
   e.preventDefault();
   const name = document.getElementById('proName').value.trim();
   const phone = document.getElementById('proPhone').value.trim();
+  const email = document.getElementById('proEmail').value.trim();
   if(!name || !phone) return;
   await fetch('/api/admin/pros', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name, phone })
+    body: JSON.stringify({ name, phone, email })
   });
   document.getElementById('proForm').reset();
   loadPros();
@@ -236,10 +238,10 @@ async function loadProSignups(){
         <strong>${escapeHtml(s.business_name)}</strong>
         <span class="pill ${s.status === 'added' ? 'resolved' : 'new'}">${s.status}</span>
       </div>
-      <div class="job-meta">${escapeHtml(s.phone)} · ${new Date(s.created_at).toLocaleString()}</div>
+      <div class="job-meta">${escapeHtml(s.phone)}${s.email ? ' · ' + escapeHtml(s.email) : ''} · ${new Date(s.created_at).toLocaleString()}</div>
       ${s.notes ? `<p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(s.notes)}</p>` : ''}
       <div class="bid-row">
-        <button class="btn" onclick="addSignupToNetwork(${s.id}, '${escapeHtml(s.business_name).replace(/'/g, "\\'")}', '${escapeHtml(s.phone)}')">Add to network</button>
+        <button class="btn" onclick="addSignupToNetwork(${s.id}, '${escapeHtml(s.business_name).replace(/'/g, "\\'")}', '${escapeHtml(s.phone)}', '${s.email ? escapeHtml(s.email).replace(/'/g, "\\'") : ''}')">Add to network</button>
         <span class="toggle-link" onclick="toggleProSignup(${s.id})">${s.status === 'added' ? 'mark as new' : 'mark added'}</span>
       </div>
     `;
@@ -255,12 +257,13 @@ async function toggleProSignup(id){
 // Quick-fills the existing "Add to network" form above with this signup's
 // details so you don't have to retype them, then submits it and marks the
 // signup as added.
-async function addSignupToNetwork(id, businessName, phone){
+async function addSignupToNetwork(id, businessName, phone, email){
   document.getElementById('proName').value = businessName;
   document.getElementById('proPhone').value = phone;
+  document.getElementById('proEmail').value = email || '';
   await fetch('/api/admin/pros', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name: businessName, phone })
+    body: JSON.stringify({ name: businessName, phone, email })
   });
   await fetch(`/api/admin/pro-signups/${id}/resolve`, { method:'POST' });
   document.getElementById('proForm').reset();

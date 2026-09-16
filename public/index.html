@@ -446,6 +446,11 @@
         <div class="error-text" id="proSignupError">Please enter your business name and phone number.</div>
       </div>
       <div class="field">
+        <label class="field-label" for="proEmailInput">Email address <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+        <input type="email" id="proEmailInput" name="email" placeholder="you@example.com">
+        <div class="hint">If provided, we'll email you a photo of the yard when one is available, so you can bid more accurately.</div>
+      </div>
+      <div class="field">
         <label class="field-label" for="proNotesInput">Questions or comments <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
         <textarea id="proNotesInput" name="notes" placeholder="Anything you'd like us to know..."></textarea>
       </div>
@@ -633,6 +638,7 @@
 
     const businessName = document.getElementById('proBusinessName').value.trim();
     const phone = document.getElementById('proPhoneInput').value.trim();
+    const email = document.getElementById('proEmailInput').value.trim();
     const notes = document.getElementById('proNotesInput').value.trim();
 
     const invalid = !businessName || phone.replace(/\D/g,'').length < 10;
@@ -646,7 +652,7 @@
       const res = await fetch('/api/pro-signup', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ businessName, phone, notes })
+        body: JSON.stringify({ businessName, phone, email, notes })
       });
       if(!res.ok) throw new Error('Request failed');
       showProSignupStatus('pending', 'Request sent', "Thanks for your interest — we'll be in touch soon.");
