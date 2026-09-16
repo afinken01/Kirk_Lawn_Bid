@@ -103,6 +103,31 @@ async function sendEmail(subject, text) {
   }
 }
 
+// Emails a job photo to a specific pro (not to you — this uses the pro's
+// own email address). Unlike MMS, this works regardless of which SMS
+// backend is active, since it doesn't depend on Twilio or any texting
+// provider at all — attaches the file directly from local disk.
+async function sendJobPhotoEmail(toEmail, job, localPhotoPath) {
+  const subject = `Photo for job #${job.id}`;
+  const text = `Here's a photo of the yard for job #${job.id} (${JSON.parse(job.services).join(', ')} at ${job.address}). Reply to the text message you received with your bid.`;
+
+  if (emailTransporter) {
+    try {
+      await emailTransporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: toEmail,
+        subject,
+        text,
+        attachments: [{ filename: path.basename(localPhotoPath), path: localPhotoPath }],
+      });
+    } catch (err) {
+      console.error(`[email] Failed to send job photo to ${toEmail}:`, err.message);
+    }
+  } else {
+    console.log(`\n[DEV EMAIL] -> ${toEmail}\nSubject: ${subject}\n${text}\n[photo attachment: ${localPhotoPath}]\n`);
+  }
+}
+
 // ---------- Database ----------
 // Lives under STORAGE_DIR (default: ./storage) alongside /uploads, so a
 // single Render persistent disk mounted at that one path covers both —
@@ -118,6 +143,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     phone TEXT NOT NULL UNIQUE,
+    email TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -165,6 +191,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     business_name TEXT NOT NULL,
     phone TEXT NOT NULL,
+    email TEXT,
     notes TEXT,
     status TEXT NOT NULL DEFAULT 'new', -- new | added
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -439,11 +466,31 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     const info = insert.run(JSON.stringify(services), notes, yardSize, address, phone, photoPath, closesAt.toISOString());
     const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(info.lastInsertRowid);
 
-    // 3: text every active pro in the network
+    // 3: text every active pro in the network. Photo delivery is per-pro:
+    // pros with an email on file get the photo attached to a real email
+    // (works regardless of SMS backend); pros without one fall back to MMS
+    // if the current backend supports it (Twilio only), or no photo at all.
     const pros = db.prepare('SELECT * FROM pros WHERE active = 1').all();
     const photoMediaUrl = publicUrlFor(photoPath);
-    const text = jobSummaryText(job) + (photoMediaUrl ? ' A photo of the job is attached.' : '') + ' Reply STOP to opt out.';
-    await Promise.all(pros.map(p => sendSMS(p.phone, text, photoMediaUrl)));
+    const baseText = jobSummaryText(job);
+
+    await Promise.all(pros.map(async (p) => {
+      let text = baseText;
+      let mediaUrlForThisPro = null;
+
+      if (req.file) {
+        if (p.email) {
+          text += ' Check your email for a photo of the job.';
+          await sendJobPhotoEmail(p.email, job, req.file.path);
+        } else if (photoMediaUrl) {
+          text += ' A photo of the job is attached.';
+          mediaUrlForThisPro = photoMediaUrl;
+        }
+      }
+
+      text += ' Reply STOP to opt out.';
+      await sendSMS(p.phone, text, mediaUrlForThisPro);
+    }));
 
     // Let the homeowner know their request actually went out — otherwise
     // they hear nothing until a winner is picked, which can be many hours
@@ -679,10 +726,11 @@ app.get('/api/admin/pros', (req, res) => {
 });
 
 app.post('/api/admin/pros', (req, res) => {
-  const { name, phone } = req.body;
+  const { name, phone, email } = req.body;
   if (!name || !phone) return res.status(400).json({ error: 'name and phone required' });
   try {
-    const info = db.prepare('INSERT INTO pros (name, phone) VALUES (?, ?)').run(name, normalizePhone(phone));
+    const info = db.prepare('INSERT INTO pros (name, phone, email) VALUES (?, ?, ?)')
+      .run(name, normalizePhone(phone), (email || '').trim() || null);
     res.json(db.prepare('SELECT * FROM pros WHERE id = ?').get(info.lastInsertRowid));
   } catch (err) {
     res.status(400).json({ error: 'Could not add pro (duplicate phone?)' });
@@ -807,6 +855,7 @@ app.post('/api/admin/support/:id/resolve', (req, res) => {
 app.post('/api/pro-signup', async (req, res) => {
   const businessName = (req.body.businessName || '').trim();
   const phone = (req.body.phone || '').trim();
+  const email = (req.body.email || '').trim();
   const notes = (req.body.notes || '').trim();
 
   if (!businessName || !phone) {
@@ -815,14 +864,15 @@ app.post('/api/pro-signup', async (req, res) => {
 
   const normalizedPhone = normalizePhone(phone);
   const info = db.prepare(`
-    INSERT INTO pro_signups (business_name, phone, notes)
-    VALUES (?, ?, ?)
-  `).run(businessName, normalizedPhone, notes || null);
+    INSERT INTO pro_signups (business_name, phone, email, notes)
+    VALUES (?, ?, ?, ?)
+  `).run(businessName, normalizedPhone, email || null, notes || null);
 
+  const emailLine = email ? `\nEmail: ${email}` : '';
   const notesLine = notes ? `\n\nQuestions/comments: ${notes}` : '';
   await sendEmail(
     `New pro network signup: ${businessName}`,
-    `${businessName} wants to join the Kirkwood lawn care network.\n\nPhone: ${normalizedPhone}${notesLine}\n\nAdd them from the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
+    `${businessName} wants to join the Kirkwood lawn care network.\n\nPhone: ${normalizedPhone}${emailLine}${notesLine}\n\nAdd them from the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
   );
 
   res.json({ ok: true, id: info.lastInsertRowid });
