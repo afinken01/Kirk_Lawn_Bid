@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3000;
 const BID_WINDOW_MINUTES = parseFloat(process.env.BID_WINDOW_MINUTES || '30');
 const BUSINESS_HOURS_START = parseInt(process.env.BUSINESS_HOURS_START || '9', 10);  // 24hr, e.g. 9 = 9am
 const BUSINESS_HOURS_END = parseInt(process.env.BUSINESS_HOURS_END || '18', 10);     // 24hr, e.g. 18 = 6pm
+const PRO_NOTIFICATION_HOLD_HOUR = parseInt(process.env.PRO_NOTIFICATION_HOLD_HOUR || '8', 10); // 24hr, e.g. 8 = 8am
 const SOFT_CLOSE_THRESHOLD_MINUTES = parseFloat(process.env.SOFT_CLOSE_THRESHOLD_MINUTES || '5');
 const SOFT_CLOSE_EXTENSION_MINUTES = parseFloat(process.env.SOFT_CLOSE_EXTENSION_MINUTES || '5');
 const CONFIRMATION_WINDOW_MINUTES = parseFloat(process.env.CONFIRMATION_WINDOW_MINUTES || '120');
@@ -163,6 +164,8 @@ db.exec(`
     fee_amount REAL,
     fee_paid INTEGER NOT NULL DEFAULT 0,
     closes_at TEXT NOT NULL,
+    broadcast_at TEXT,
+    broadcast_sent INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -358,6 +361,29 @@ function computeInitialWindowMs(now) {
   return msUntilOpen + (60 * 60 * 1000); // + 1 hour buffer past opening
 }
 
+// Generic "next time the clock hits this hour" helper — unlike
+// nextBusinessOpenTime above, this doesn't assume it's only called when
+// already outside some range, so it's reusable for other hour-based cutoffs.
+function nextOccurrenceOfHour(now, hour) {
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+// If a job comes in outside PRO_NOTIFICATION_HOLD_HOUR–BUSINESS_HOURS_END
+// (default 8am–6pm), pros aren't notified until that hold hour the next
+// time it occurs — nobody wants a job alert at 1am. Returns null if the
+// job should be broadcast immediately (already within the allowed window).
+function computeBroadcastHoldUntil(now) {
+  const currentHour = now.getHours() + now.getMinutes() / 60;
+  const inAllowedWindow = currentHour >= PRO_NOTIFICATION_HOLD_HOUR && currentHour < BUSINESS_HOURS_END;
+  if (inAllowedWindow) return null;
+  return nextOccurrenceOfHour(now, PRO_NOTIFICATION_HOLD_HOUR);
+}
+
 // In-memory registry of the pending timer per job — either the "close
 // bidding" timer or, once a bid is tentatively selected, the "homeowner
 // didn't respond" timer. Only one is ever active per job at a time, so
@@ -377,6 +403,17 @@ function scheduleClose(jobId, delayMs) {
   const timer = setTimeout(() => {
     jobTimers.delete(jobId);
     selectWinner(jobId).catch(err => console.error('selectWinner error:', err));
+  }, Math.max(delayMs, 0));
+  jobTimers.set(jobId, timer);
+}
+
+// If pro notifications are being held until morning, this fires the actual
+// broadcast once that hour arrives.
+function scheduleBroadcast(jobId, delayMs) {
+  clearJobTimer(jobId);
+  const timer = setTimeout(() => {
+    jobTimers.delete(jobId);
+    handleScheduledBroadcast(jobId).catch(err => console.error('handleScheduledBroadcast error:', err));
   }, Math.max(delayMs, 0));
   jobTimers.set(jobId, timer);
 }
@@ -419,7 +456,19 @@ function maybeExtendWindow(job, now) {
 function recoverOpenJobTimers() {
   const now = new Date();
 
-  const openJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'open'`).all();
+  // Jobs whose pro broadcast is still being held until morning.
+  const pendingBroadcastJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'open' AND broadcast_sent = 0`).all();
+  for (const job of pendingBroadcastJobs) {
+    const remainingMs = new Date(job.broadcast_at).getTime() - now.getTime();
+    if (remainingMs <= 0) {
+      handleScheduledBroadcast(job.id).catch(err => console.error('handleScheduledBroadcast error:', err));
+    } else {
+      scheduleBroadcast(job.id, remainingMs);
+    }
+  }
+
+  // Jobs already broadcast to pros, still collecting bids.
+  const openJobs = db.prepare(`SELECT * FROM jobs WHERE status = 'open' AND broadcast_sent = 1`).all();
   for (const job of openJobs) {
     const remainingMs = new Date(job.closes_at).getTime() - now.getTime();
     if (remainingMs <= 0) {
@@ -456,58 +505,97 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
 
     const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
     const now = new Date();
-    const windowMs = computeInitialWindowMs(now);
-    const closesAt = new Date(now.getTime() + windowMs);
+
+    // If it's outside pro-notification hours, hold the broadcast until the
+    // next occurrence of PRO_NOTIFICATION_HOLD_HOUR instead of texting pros
+    // in the middle of the night. The bidding window is computed from
+    // whenever pros will actually see the job, not from submission time —
+    // otherwise part of their bidding time would silently burn away
+    // overnight before anyone's even seen it.
+    const holdUntil = computeBroadcastHoldUntil(now);
+    const broadcastAt = holdUntil || now;
+    const windowMs = computeInitialWindowMs(broadcastAt);
+    const closesAt = new Date(broadcastAt.getTime() + windowMs);
 
     const insert = db.prepare(`
-      INSERT INTO jobs (services, notes, yard_size, address, phone, photo_path, closes_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO jobs (services, notes, yard_size, address, phone, photo_path, closes_at, broadcast_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const info = insert.run(JSON.stringify(services), notes, yardSize, address, phone, photoPath, closesAt.toISOString());
+    const info = insert.run(
+      JSON.stringify(services), notes, yardSize, address, phone, photoPath,
+      closesAt.toISOString(), broadcastAt.toISOString()
+    );
     const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(info.lastInsertRowid);
 
-    // 3: text every active pro in the network. Photo delivery is per-pro:
-    // pros with an email on file get the photo attached to a real email
-    // (works regardless of SMS backend); pros without one fall back to MMS
-    // if the current backend supports it (Twilio only), or no photo at all.
-    const pros = db.prepare('SELECT * FROM pros WHERE active = 1').all();
-    const photoMediaUrl = publicUrlFor(photoPath);
-    const baseText = jobSummaryText(job);
-
-    await Promise.all(pros.map(async (p) => {
-      let text = baseText;
-      let mediaUrlForThisPro = null;
-
-      if (req.file) {
-        if (p.email) {
-          text += ' Check your email for a photo of the job.';
-          await sendJobPhotoEmail(p.email, job, req.file.path);
-        } else if (photoMediaUrl) {
-          text += ' A photo of the job is attached.';
-          mediaUrlForThisPro = photoMediaUrl;
-        }
-      }
-
-      text += ' Reply STOP to opt out.';
-      await sendSMS(p.phone, text, mediaUrlForThisPro);
-    }));
+    let prosNotified = 0;
+    if (holdUntil) {
+      // Don't broadcast yet — schedule it, and let the bid-window timer
+      // start only once that broadcast actually happens (see
+      // handleScheduledBroadcast).
+      scheduleBroadcast(job.id, holdUntil.getTime() - now.getTime());
+    } else {
+      prosNotified = await broadcastJobToPros(job);
+      db.prepare('UPDATE jobs SET broadcast_sent = 1 WHERE id = ?').run(job.id);
+      scheduleClose(job.id, windowMs);
+    }
 
     // Let the homeowner know their request actually went out — otherwise
     // they hear nothing until a winner is picked, which can be many hours
     // away on an off-hours window.
     const expectedBy = formatExpectedReplyTime(closesAt, now);
-    await sendSMS(job.phone,
-      `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`);
+    const homeownerText = holdUntil
+      ? `Thank you for using Kirkwood Lawn and Landscape Service Finder. It's currently outside pro notification hours, so we'll reach out to nearby lawncare pros starting at ${holdUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`
+      : `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`;
+    await sendSMS(job.phone, homeownerText);
 
-    // Auto-select the best bid once the bidding window closes
-    scheduleClose(job.id, windowMs);
-
-    res.json({ jobId: job.id, prosNotified: pros.length, closesAt: closesAt.toISOString() });
+    res.json({ jobId: job.id, prosNotified, closesAt: closesAt.toISOString(), broadcastAt: broadcastAt.toISOString() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error.' });
   }
 });
+
+// Texts (and, for pros with an email on file, emails) every active pro
+// about a job. Pulled into its own function so it can run either
+// immediately on submission or later from a scheduled "held" broadcast —
+// both paths need the exact same per-pro photo-delivery logic.
+async function broadcastJobToPros(job) {
+  const pros = db.prepare('SELECT * FROM pros WHERE active = 1').all();
+  const photoMediaUrl = publicUrlFor(job.photo_path);
+  const localPhotoPath = job.photo_path ? path.join(uploadDir, path.basename(job.photo_path)) : null;
+  const baseText = jobSummaryText(job);
+
+  await Promise.all(pros.map(async (p) => {
+    let text = baseText;
+    let mediaUrlForThisPro = null;
+
+    if (localPhotoPath) {
+      if (p.email) {
+        text += ' Check your email for a photo of the job.';
+        await sendJobPhotoEmail(p.email, job, localPhotoPath);
+      } else if (photoMediaUrl) {
+        text += ' A photo of the job is attached.';
+        mediaUrlForThisPro = photoMediaUrl;
+      }
+    }
+
+    text += ' Reply STOP to opt out.';
+    await sendSMS(p.phone, text, mediaUrlForThisPro);
+  }));
+
+  return pros.length;
+}
+
+// Fires when a held broadcast's scheduled time arrives — sends the job to
+// pros, marks it sent, and only now starts the bid-window close timer.
+async function handleScheduledBroadcast(jobId) {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+  if (!job || job.broadcast_sent) return; // already sent, or job no longer exists
+  await broadcastJobToPros(job);
+  db.prepare('UPDATE jobs SET broadcast_sent = 1 WHERE id = ?').run(jobId);
+  const remainingMs = new Date(job.closes_at).getTime() - Date.now();
+  scheduleClose(jobId, remainingMs);
+}
 
 // ---------- 4: pros bid by replying to the text ----------
 // Shared by both inbound webhook shapes (Twilio's synchronous-reply style
