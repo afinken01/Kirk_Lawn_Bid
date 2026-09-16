@@ -29,7 +29,8 @@
   .pill.open{background:#EAF1E2;color:var(--evergreen);}
   .pill.matched{background:#FCEFDD;color:#8A5A16;}
   .pill.awaiting_confirmation{background:#E9F0FA;color:#2A5C8A;}
-  .pill.expired{background:#F1EEE6;color:var(--ink-soft);}
+  .pill.expired{background:#FBEDEA;color:var(--error);}
+  .pill.cancelled{background:#F1EEE6;color:var(--ink-soft);}
   .pill.new{background:#FCEFDD;color:#8A5A16;}
   .pill.resolved{background:#F1EEE6;color:var(--ink-soft);}
   .job-card{border:1px solid var(--paper-line);border-radius:4px;padding:16px 18px;margin-bottom:14px;}
@@ -66,6 +67,11 @@
   <section>
     <h2>Jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
     <div id="jobsList"><p class="empty">Loading...</p></div>
+  </section>
+
+  <section>
+    <h2>Archived jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div id="archivedJobsList"><p class="empty">Loading...</p></div>
   </section>
 
   <section>
@@ -108,52 +114,81 @@ document.getElementById('proForm').addEventListener('submit', async e=>{
   loadPros();
 });
 
+function statusLabel(status){
+  if (status === 'matched') return 'Bid sent';
+  if (status === 'expired') return 'No bids';
+  if (status === 'cancelled') return 'Cancelled';
+  return status.replace('_',' ');
+}
+
+function renderJobCard(j){
+  const card = document.createElement('div');
+  card.className = 'job-card';
+  const bidsHtml = j.bids.length
+    ? j.bids.map(b => `
+      <div class="bid-row">
+        <span>${b.pro_name || b.pro_phone} — $${b.price.toFixed(2)}</span>
+        ${j.status === 'open' ? `<button class="btn" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
+          : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>'
+            : (j.pending_bid_id === b.id ? '<span class="pill awaiting_confirmation">Pending</span>' : ''))}
+      </div>`).join('')
+    : '<p class="empty">No bids yet.</p>';
+
+  const confirmationHtml = (j.status === 'awaiting_confirmation') ? `
+    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
+      <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + new Date(j.confirmation_expires_at).toLocaleString() : ''}</span>
+    </div>
+    <div class="bid-row">
+      <button class="btn" onclick="forceConfirm(${j.id})">Force confirm</button>
+      <button class="btn" onclick="forceCancel(${j.id})">Force cancel</button>
+    </div>` : '';
+
+  const feeHtml = (j.status === 'matched' && j.fee_amount != null) ? `
+    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
+      <span>Network fee: $${j.fee_amount.toFixed(2)} <span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span></span>
+      <button class="btn" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>
+    </div>` : '';
+
+  card.innerHTML = `
+    <div class="job-head">
+      <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
+      <span class="pill ${j.status}">${statusLabel(j.status)}</span>
+    </div>
+    <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ' · pros notified at ' + new Date(j.broadcast_at).toLocaleString()) : ''}</div>
+    ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
+    ${bidsHtml}
+    ${confirmationHtml}
+    ${feeHtml}
+    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
+      <span></span>
+      <span class="toggle-link" onclick="deleteJob(${j.id})" style="color:var(--error);">Delete job</span>
+    </div>
+  `;
+  return card;
+}
+
 async function loadJobs(){
   const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
+  const active = jobs.filter(j => j.status === 'open' || j.status === 'awaiting_confirmation');
   const list = document.getElementById('jobsList');
-  if(!jobs.length){ list.innerHTML = '<p class="empty">No job requests yet.</p>'; return; }
+  if(!active.length){ list.innerHTML = '<p class="empty">No active job requests.</p>'; return; }
   list.innerHTML = '';
-  jobs.forEach(j=>{
-    const card = document.createElement('div');
-    card.className = 'job-card';
-    const bidsHtml = j.bids.length
-      ? j.bids.map(b => `
-        <div class="bid-row">
-          <span>${b.pro_name || b.pro_phone} — $${b.price.toFixed(2)}</span>
-          ${j.status === 'open' ? `<button class="btn" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
-            : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>'
-              : (j.pending_bid_id === b.id ? '<span class="pill awaiting_confirmation">Pending</span>' : ''))}
-        </div>`).join('')
-      : '<p class="empty">No bids yet.</p>';
+  active.forEach(j => list.appendChild(renderJobCard(j)));
+}
 
-    const confirmationHtml = (j.status === 'awaiting_confirmation') ? `
-      <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-        <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + new Date(j.confirmation_expires_at).toLocaleString() : ''}</span>
-      </div>
-      <div class="bid-row">
-        <button class="btn" onclick="forceConfirm(${j.id})">Force confirm</button>
-        <button class="btn" onclick="forceCancel(${j.id})">Force cancel</button>
-      </div>` : '';
+async function loadArchivedJobs(){
+  const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
+  const archived = jobs.filter(j => j.status === 'matched' || j.status === 'cancelled' || j.status === 'expired');
+  const list = document.getElementById('archivedJobsList');
+  if(!archived.length){ list.innerHTML = '<p class="empty">No archived jobs yet.</p>'; return; }
+  list.innerHTML = '';
+  archived.forEach(j => list.appendChild(renderJobCard(j)));
+}
 
-    const feeHtml = (j.status === 'matched' && j.fee_amount != null) ? `
-      <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-        <span>Network fee: $${j.fee_amount.toFixed(2)} <span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span></span>
-        <button class="btn" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>
-      </div>` : '';
-
-    card.innerHTML = `
-      <div class="job-head">
-        <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
-        <span class="pill ${j.status}">${j.status.replace('_',' ')}</span>
-      </div>
-      <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ' · pros notified at ' + new Date(j.broadcast_at).toLocaleString()) : ''}</div>
-      ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
-      ${bidsHtml}
-      ${confirmationHtml}
-      ${feeHtml}
-    `;
-    list.appendChild(card);
-  });
+async function deleteJob(jobId){
+  if(!confirm(`Delete job #${jobId}? This cannot be undone.`)) return;
+  await fetch(`/api/admin/jobs/${jobId}`, { method:'DELETE' });
+  loadAll();
 }
 
 async function selectBid(jobId, bidId){
@@ -270,9 +305,9 @@ async function addSignupToNetwork(id, businessName, phone, email){
   loadAll();
 }
 
-function loadAll(){ loadPros(); loadJobs(); loadSupport(); loadProSignups(); }
+function loadAll(){ loadPros(); loadJobs(); loadArchivedJobs(); loadSupport(); loadProSignups(); }
 loadAll();
-setInterval(loadJobs, 15000);
+setInterval(() => { loadJobs(); loadArchivedJobs(); }, 15000);
 </script>
 </body>
 </html>
