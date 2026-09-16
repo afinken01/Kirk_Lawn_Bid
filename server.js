@@ -201,6 +201,36 @@ db.exec(`
   );
 `);
 
+// ---------- Schema migrations ----------
+// CREATE TABLE IF NOT EXISTS only helps on a brand-new database — it does
+// nothing to an existing one, so any column added after the table already
+// existed in production needs an explicit ALTER TABLE here. This never
+// mattered before the persistent disk was attached, because every deploy
+// wiped the database and recreated it fresh with whatever the schema
+// looked like at that moment. Now that the database survives deploys, this
+// is the only thing that keeps an older production database in sync with
+// the current code. Safe to run on every startup — it's a no-op for any
+// column that already exists (checked via PRAGMA table_info, not by
+// catching the error), and safe to run on a freshly created database too.
+function ensureColumn(table, column, definition) {
+  const existing = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!existing.some(col => col.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    console.log(`[migration] Added column ${table}.${column}`);
+  }
+}
+
+ensureColumn('pros', 'email', 'TEXT');
+ensureColumn('jobs', 'yard_size', 'TEXT');
+ensureColumn('jobs', 'pending_bid_id', 'INTEGER');
+ensureColumn('jobs', 'confirmation_expires_at', 'TEXT');
+ensureColumn('jobs', 'fee_amount', 'REAL');
+ensureColumn('jobs', 'fee_paid', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('jobs', 'broadcast_at', 'TEXT');
+ensureColumn('jobs', 'broadcast_sent', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('pro_signups', 'email', 'TEXT');
+ensureColumn('pro_signups', 'notes', 'TEXT');
+
 // ---------- File uploads ----------
 const uploadDir = path.join(STORAGE_DIR, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
