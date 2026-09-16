@@ -762,8 +762,11 @@ async function selectWinner(jobId) {
   const bids = db.prepare('SELECT * FROM bids WHERE job_id = ? ORDER BY price ASC').all(jobId);
 
   if (!bids.length) {
+    // Homeowner isn't notified here — a job with zero bids isn't
+    // actionable on their end, and getting a text saying "nothing
+    // happened" is worse than getting nothing. It shows up flagged in the
+    // admin dashboard instead, so you can follow up manually if needed.
     db.prepare(`UPDATE jobs SET status = 'expired' WHERE id = ?`).run(jobId);
-    await sendSMS(job.phone, `No bids came in yet for job #${jobId}. We'll keep trying — reply here if you'd like to cancel.`);
     return null;
   }
 
@@ -872,7 +875,18 @@ app.get('/api/admin/jobs', (req, res) => {
   res.json(withBids);
 });
 
-// Manually pick a winner before the auto-timer fires
+// Manually delete a job (and its bids) — e.g. a test submission, a mistake,
+// or just cleaning up old archived jobs. Cancels any pending timer for it
+// first so a stale timeout doesn't fire against a job that no longer exists.
+app.delete('/api/admin/jobs/:id', (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  clearJobTimer(job.id);
+  db.prepare('DELETE FROM bids WHERE job_id = ?').run(job.id);
+  db.prepare('DELETE FROM jobs WHERE id = ?').run(job.id);
+  res.json({ ok: true });
+});
+
 // Manually pick a bid before the auto-timer fires — like the automatic
 // path, this asks the homeowner to confirm rather than matching instantly.
 app.post('/api/admin/jobs/:id/select', async (req, res) => {
