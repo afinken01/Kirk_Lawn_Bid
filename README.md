@@ -85,6 +85,40 @@ would have been sent to whom.
 That's it — submitting the homeowner form will now send real texts, and pro
 replies will come back in as real bids.
 
+### Alternative: SMS Gateway for Android (no Twilio account)
+
+Instead of Twilio, you can use a spare Android phone with
+[SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway) as
+the SMS sender. This backend is only used when the Twilio variables above
+are left blank.
+
+1. Install the app (APK from GitHub Releases, since it isn't on the Play
+   Store — you'll need to allow installs from unknown sources and may need
+   to temporarily disable Play Protect scanning).
+2. In the app's Settings, choose **Public Cloud Server** mode. Credentials
+   (a username and password) are generated automatically — no account
+   signup required.
+3. Log into [dashboard.sms-gate.app](https://dashboard.sms-gate.app) with
+   those credentials and register a webhook for the `sms:received` event,
+   pointing at:
+   ```
+   https://your-domain.com/api/sms-gateway-inbound
+   ```
+4. Fill in `.env`:
+   ```
+   SMS_GATEWAY_USERNAME=your-generated-username
+   SMS_GATEWAY_PASSWORD=your-generated-password
+   SMS_GATEWAY_SIGNING_KEY=your-signing-key
+   ```
+   The signing key is found in the app under Settings > Webhooks > Signing
+   Key. It's optional but strongly recommended — without it, anyone who
+   discovers your webhook URL could submit fake bids.
+
+**Known limitation**: this backend doesn't support MMS. The QR-code payment
+image and job photos attached to the pro broadcast will not be sent — the
+app falls back to plain text (a payment link instead of a QR code image,
+and no photo attachment) automatically, no configuration needed.
+
 ## Adjusting how bidding works
 
 - **Bidding window**: set `BID_WINDOW_MINUTES` in `.env` (default 30) — this
@@ -147,8 +181,32 @@ lawn-bid/
 ├── package.json
 ├── .env.example
 ├── .gitignore
-└── data/lawnbid.db        # SQLite database (created automatically)
+└── storage/               # SQLite database + uploaded photos (see below)
+    ├── data/lawnbid.db
+    └── uploads/
 ```
+
+## Persistent storage (important for production)
+
+By default, `storage/` lives on local disk. **On most hosts, including
+Render's free/starter tier, local disk is wiped on every restart and
+redeploy** — meaning every job, bid, pro, and signup request is lost each
+time you deploy a change, unless you attach a persistent disk.
+
+Both the database and uploaded photos live under one `storage/` folder
+specifically so a single persistent disk can cover both — most hosts
+(including Render) only support one disk per service, with one mount path.
+
+**On Render**: go to your service > Disks > Add Disk, and set the mount
+path to a subdirectory of your source code, e.g.
+`/opt/render/project/src/storage` (Render does not allow mounting a disk at
+the project root itself). Choose a size (1 GB is plenty to start). Render
+redeploys automatically once the disk is attached, and takes an automatic
+snapshot every 24 hours in case you ever need to restore.
+
+If you'd rather store `storage/` somewhere else entirely, set the
+`STORAGE_DIR` environment variable to an absolute path — this is also how
+you'd point at a disk mounted somewhere other than the default location.
 
 ## Notes on the data model
 
@@ -158,7 +216,8 @@ lawn-bid/
   waiting on the homeowner's Y/N reply; `winning_bid_id` is only set once
   they confirm. `fee_amount` and `fee_paid` track the network fee — see
   "Network fee" below.
-- **`pros`** — your network of lawn care professionals (name, phone,
+- **`pros`** — your network of lawn care professionals (name, phone, an
+  optional email — used to send job photos, see below — and
   active/paused).
 - **`bids`** — one row per SMS bid received, linked to a job.
 - **`support_messages`** — one row per customer service message submitted
@@ -166,17 +225,18 @@ lawn-bid/
   message, status: `new` → `resolved`). View and resolve these from the
   admin dashboard.
 - **`pro_signups`** — one row per request from the "Join our network of
-  pros" button (business name, phone, status: `new` → `added`). Emails you
-  directly when submitted, and shows up in the admin dashboard with an "Add
-  to network" button that quick-fills the existing pro-network form so you
-  don't have to retype anything.
+  pros" button (business name, phone, an optional email, status: `new` →
+  `added`). Emails you directly when submitted, and shows up in the admin
+  dashboard with an "Add to network" button that quick-fills the existing
+  pro-network form (including the email) so you don't have to retype
+  anything.
 
 ## Email notifications
 
 The "Join our network of pros" button on the homepage collects a business
-name and phone number, saves it to the database, and emails you so you
-don't have to keep checking the dashboard. Configure it with any SMTP
-provider in `.env`:
+name, phone number, and optional email, saves it to the database, and
+emails you so you don't have to keep checking the dashboard. Configure it
+with any SMTP provider in `.env`:
 
 ```
 SMTP_HOST=smtp.gmail.com
@@ -193,6 +253,18 @@ Gmail password. Leave these blank to run in dev mode — signup requests are
 still saved and visible in the admin dashboard, they just aren't emailed;
 the email that would have been sent is printed to the server console
 instead.
+
+### Job photos via email (works with any SMS backend)
+
+If a pro has an email address on file, they'll receive the job's photo as a
+real email attachment instead of via MMS — this uses the same SMTP setup
+above, so no additional configuration is needed. This matters because
+Twilio is the only SMS backend here that supports MMS at all; SMS Gateway
+for Android does not. Pros without an email on file still get a plain text
+with no photo (or an MMS, if Twilio is configured and no email is on
+file) — nothing breaks either way, the photo delivery method is just
+decided per pro, automatically. Add a pro's email from the admin dashboard
+or the "Join our network of pros" signup form.
 
 ## Network fee
 
@@ -246,6 +318,6 @@ a dollar amount, nothing about the homeowner or the job. Leave both
 variables blank to skip the QR code — the fee is still mentioned as plain
 text in that case.
 
-Photos are stored on disk under `/uploads` and served statically; for a
-production deployment you'd likely swap this for S3 or similar object
-storage, since most hosts don't persist local disk across deploys.
+Photos are stored under `storage/uploads` and served statically — see
+"Persistent storage" above for why this needs a persistent disk in
+production, and how to set one up.
