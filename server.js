@@ -36,36 +36,64 @@ if (TWILIO_ENABLED) {
 // no outbound MMS support, so mediaUrl is silently ignored on that backend
 // (the calling code already falls back to a plain-text payment link when no
 // QR image is available, so nothing breaks — the QR just never appears).
+// Retries a transient failure (network error, 5xx, or 429 rate-limit) a
+// couple of times with a short backoff before giving up — a brief outage
+// on the SMS provider's end (like a Cloudflare 520) shouldn't silently
+// drop a job notification or bid confirmation. Doesn't retry 4xx errors
+// (bad auth, invalid number, etc.) since those won't succeed on retry.
+async function withRetry(fn, delaysMs = [3000, 8000]) {
+  const attempts = delaysMs.length + 1;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.statusCode || (err.response && err.response.status);
+      const isRetryable = !status || status >= 500 || status === 429;
+      if (!isRetryable || i === attempts - 1) throw err;
+      console.warn(`[sms] Retryable error (${status || 'network'}), retrying in ${delaysMs[i]}ms... (attempt ${i + 2}/${attempts})`);
+      await new Promise(resolve => setTimeout(resolve, delaysMs[i]));
+    }
+  }
+}
+
+const SMS_GATEWAY_BASE_URL = process.env.SMS_GATEWAY_BASE_URL || 'https://api.sms-gate.app';
+
 async function sendSMS(to, body, mediaUrl) {
   if (twilioClient) {
     try {
-      const params = { to, from: process.env.TWILIO_FROM_NUMBER, body };
-      if (mediaUrl) params.mediaUrl = [mediaUrl];
-      await twilioClient.messages.create(params);
+      await withRetry(async () => {
+        const params = { to, from: process.env.TWILIO_FROM_NUMBER, body };
+        if (mediaUrl) params.mediaUrl = [mediaUrl];
+        await twilioClient.messages.create(params);
+      });
     } catch (err) {
-      console.error(`[sms] Failed to send to ${to}:`, err.message);
+      console.error(`[sms] Failed to send to ${to} after retries:`, err.message);
     }
   } else if (SMS_GATEWAY_ENABLED) {
     try {
-      const res = await fetch('https://api.sms-gate.app/3rdparty/v1/messages?skipPhoneValidation=true', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + Buffer.from(
-            `${process.env.SMS_GATEWAY_USERNAME}:${process.env.SMS_GATEWAY_PASSWORD}`
-          ).toString('base64'),
-        },
-        body: JSON.stringify({
-          textMessage: { text: body },
-          phoneNumbers: [to],
-        }),
+      await withRetry(async () => {
+        const res = await fetch(`${SMS_GATEWAY_BASE_URL}/3rdparty/v1/messages?skipPhoneValidation=true`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + Buffer.from(
+              `${process.env.SMS_GATEWAY_USERNAME}:${process.env.SMS_GATEWAY_PASSWORD}`
+            ).toString('base64'),
+          },
+          body: JSON.stringify({
+            textMessage: { text: body },
+            phoneNumbers: [to],
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          const err = new Error(`SMS Gateway responded ${res.status}: ${errText.slice(0, 200)}`);
+          err.status = res.status;
+          throw err;
+        }
       });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        console.error(`[sms] SMS Gateway failed to send to ${to}: ${res.status} ${errText}`);
-      }
     } catch (err) {
-      console.error(`[sms] SMS Gateway request failed for ${to}:`, err.message);
+      console.error(`[sms] SMS Gateway failed to send to ${to} after retries:`, err.message);
     }
   } else {
     console.log(`\n[DEV SMS] -> ${to}\n${body}${mediaUrl ? `\n[MMS image attached] ${mediaUrl}` : ''}\n`);

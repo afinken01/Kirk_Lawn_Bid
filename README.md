@@ -122,6 +122,16 @@ image and job photos attached to the pro broadcast will not be sent — the
 app falls back to plain text (a payment link instead of a QR code image,
 and no photo attachment) automatically, no configuration needed.
 
+**Automatic retries**: both this backend and Twilio automatically retry a
+failed send up to twice (3 seconds, then 8 seconds later) if the failure
+looks transient — a network error, a `5xx` response, or a `429` rate limit.
+This covers brief outages on the provider's end, like a Cloudflare 520,
+without silently dropping a job notification or bid confirmation. A
+permanent failure (bad credentials, invalid phone number — any `4xx`) is
+not retried, since retrying wouldn't help. Check the server logs for
+`Retryable error` to see this happening live, or `failed to send... after
+retries` if it ultimately gave up.
+
 ## Holding notifications overnight
 
 If a homeowner submits a job outside `PRO_NOTIFICATION_HOLD_HOUR`–
