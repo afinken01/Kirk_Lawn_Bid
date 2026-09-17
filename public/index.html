@@ -211,7 +211,7 @@
     display:none;
   }
   .status-panel.show{display:block;}
-  .status-panel.pending{background:#EFF3E7; border:1.5px solid var(--evergreen);}
+  .status-panel.pending, .status-panel.success{background:#EFF3E7; border:1.5px solid var(--evergreen);}
   .status-panel.error{background:#FBEDEA; border:1.5px solid var(--error); color:var(--error);}
   .status-panel h3{margin:0 0 6px; font-family:'Zilla Slab',serif; font-size:1.05rem; color:var(--evergreen);}
   .status-panel.error h3{color:var(--error);}
@@ -434,7 +434,7 @@
       <h2>Join our network of pros</h2>
       <button type="button" class="modal-close" id="proSignupCloseBtn" aria-label="Close">&times;</button>
     </div>
-    <p class="hint" style="margin:-8px 0 18px;">When you join our network, you will receive a text message when a homeowner in your area visits our website and asks for a bid on their lawncare. That text message will include a description of the lawncare job. You can either respond to the text with a bid, request to exit the network by typing "stop," or do nothing. Doing nothing will not prevent future requests from coming to you. Thank you, and please reach out if you have any questions.</p>
+    <p class="hint" style="margin:-8px 0 18px;">When you join the KLLS network, here's how it works.<br><br>You will receive a text message from us when a homeowner in your area visits our website and asks for a bid on their lawncare (during business hours). That text message will include a description of the lawncare job, and will refer you to your email if pictures are included. One hour later, we compare your bid, and those of other lawn pros in the network, and send the lowest one to the homeowner. If they accept, your contact info is shared with the homeowner for them to reach out, and we alert you that you won.<br><br>When you win a job, we'll request a one-time network fee — $10 for smaller jobs, up to $30 for larger ones — due within 7 days or after completion of the job. All additional future work between you and the homeowner is your income.<br><br>At any time, you can remove yourself from the KLLS network by replying "stop" to any text message.<br><br>Thank you, and please reach out if you have any questions.</p>
     <form id="proSignupForm">
       <div class="field">
         <label class="field-label" for="proBusinessName">Business name</label>
@@ -534,7 +534,7 @@
       const res = await fetch('/api/requests', { method: 'POST', body: fd });
       if(!res.ok) throw new Error('Request failed');
       const data = await res.json();
-      showStatus('pending', 'Job #' + data.jobId + ' sent',
+      showStatus('success', 'Job #' + data.jobId + ' sent',
         `We texted ${data.prosNotified || 'nearby'} lawn care pros. You'll get a text at ${phone} as soon as we have a bid worth accepting — usually within the hour.`);
       form.reset();
       photoPreview.style.display = 'none';
