@@ -82,6 +82,31 @@
 </div>
 
 <script>
+// closes_at / broadcast_at / confirmation_expires_at are stored as proper
+// ISO 8601 UTC strings (from Date#toISOString()), so `new Date(...)` parses
+// them correctly. created_at columns, though, come from SQLite's
+// `datetime('now')`, which returns a UTC clock reading formatted as
+// "YYYY-MM-DD HH:MM:SS" — no 'T', no 'Z', no offset. Browsers parse that
+// ambiguous format as *local* time rather than UTC, silently shifting it by
+// whatever the admin's own timezone offset happens to be. Route every
+// server timestamp through this helper so it's always read as the UTC
+// instant it actually is, then always display it in Central time (the
+// business's own timezone) rather than whatever timezone the admin's
+// browser happens to be set to.
+function parseServerTimestamp(ts) {
+  if (!ts) return null;
+  // Already unambiguous (has an explicit 'Z' or numeric offset) — safe as-is.
+  if (/Z$/.test(ts) || /[+-]\d\d:\d\d$/.test(ts)) return new Date(ts);
+  // Legacy/SQLite "YYYY-MM-DD HH:MM:SS" format: this value is already UTC,
+  // just missing the marker that says so.
+  return new Date(ts.replace(' ', 'T') + 'Z');
+}
+
+function formatServerTimestamp(ts) {
+  const d = parseServerTimestamp(ts);
+  return d ? d.toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' }) : '';
+}
+
 async function loadPros(){
   const pros = await fetch('/api/admin/pros').then(r=>r.json());
   const tbody = document.querySelector('#prosTable tbody');
@@ -136,7 +161,7 @@ function renderJobCard(j){
 
   const confirmationHtml = (j.status === 'awaiting_confirmation') ? `
     <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-      <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + new Date(j.confirmation_expires_at).toLocaleString() : ''}</span>
+      <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + formatServerTimestamp(j.confirmation_expires_at) : ''}</span>
     </div>
     <div class="bid-row">
       <button class="btn" onclick="forceConfirm(${j.id})">Force confirm</button>
@@ -154,7 +179,7 @@ function renderJobCard(j){
       <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
       <span class="pill ${j.status}">${statusLabel(j.status)}</span>
     </div>
-    <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + new Date(j.closes_at).toLocaleString() : ' · pros notified at ' + new Date(j.broadcast_at).toLocaleString()) : ''}</div>
+    <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + formatServerTimestamp(j.closes_at) : ' · pros notified at ' + formatServerTimestamp(j.broadcast_at)) : ''}</div>
     ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
     ${bidsHtml}
     ${confirmationHtml}
@@ -233,7 +258,7 @@ async function loadSupport(){
         <strong>${escapeHtml(m.name)}</strong>
         <span class="pill ${m.status}">${m.status}</span>
       </div>
-      <div class="job-meta">${[m.address, m.phone].filter(Boolean).map(escapeHtml).join(' · ') || 'No contact info provided'} · ${new Date(m.created_at).toLocaleString()}</div>
+      <div class="job-meta">${[m.address, m.phone].filter(Boolean).map(escapeHtml).join(' · ') || 'No contact info provided'} · ${formatServerTimestamp(m.created_at)}</div>
       <p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(m.message)}</p>
       <button class="btn" onclick="toggleSupport(${m.id})">${m.status === 'resolved' ? 'Mark as new' : 'Mark resolved'}</button>
     `;
@@ -273,7 +298,7 @@ async function loadProSignups(){
         <strong>${escapeHtml(s.business_name)}</strong>
         <span class="pill ${s.status === 'added' ? 'resolved' : 'new'}">${s.status}</span>
       </div>
-      <div class="job-meta">${escapeHtml(s.phone)}${s.email ? ' · ' + escapeHtml(s.email) : ''} · ${new Date(s.created_at).toLocaleString()}</div>
+      <div class="job-meta">${escapeHtml(s.phone)}${s.email ? ' · ' + escapeHtml(s.email) : ''} · ${formatServerTimestamp(s.created_at)}</div>
       ${s.notes ? `<p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(s.notes)}</p>` : ''}
       <div class="bid-row">
         <button class="btn" onclick="addSignupToNetwork(${s.id}, '${escapeHtml(s.business_name).replace(/'/g, "\\'")}', '${escapeHtml(s.phone)}', '${s.email ? escapeHtml(s.email).replace(/'/g, "\\'") : ''}')">Add to network</button>
