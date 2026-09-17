@@ -174,7 +174,7 @@ db.exec(`
     phone TEXT NOT NULL UNIQUE,
     email TEXT,
     active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
   CREATE TABLE IF NOT EXISTS jobs (
@@ -194,7 +194,7 @@ db.exec(`
     closes_at TEXT NOT NULL,
     broadcast_at TEXT,
     broadcast_sent INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
   CREATE TABLE IF NOT EXISTS bids (
@@ -204,7 +204,7 @@ db.exec(`
     pro_name TEXT,
     price REAL NOT NULL,
     raw_message TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY(job_id) REFERENCES jobs(id)
   );
 
@@ -215,7 +215,7 @@ db.exec(`
     phone TEXT,
     message TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'new', -- new | resolved
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
   CREATE TABLE IF NOT EXISTS pro_signups (
@@ -225,7 +225,7 @@ db.exec(`
     email TEXT,
     notes TEXT,
     status TEXT NOT NULL DEFAULT 'new', -- new | added
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 `);
 
@@ -377,17 +377,98 @@ function jobSummaryText(job) {
 // always reflects the actual window (business-hours or off-hours + soft
 // close extensions), never a separate guess.
 function formatExpectedReplyTime(closesAt, now) {
-  const timeStr = closesAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (closesAt.toDateString() === now.toDateString()) {
+  const timeStr = closesAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: APP_TIMEZONE });
+  if (zonedDateKey(closesAt) === zonedDateKey(now)) {
     return `${timeStr} today`;
   }
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  if (closesAt.toDateString() === tomorrow.toDateString()) {
+  const { year, month, day } = zonedParts(now);
+  const tomorrow = addDaysToDateParts(year, month, day, 1);
+  if (zonedDateKey(closesAt) === `${tomorrow.year}-${tomorrow.month}-${tomorrow.day}`) {
     return `${timeStr} tomorrow`;
   }
-  const dateStr = closesAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const dateStr = closesAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: APP_TIMEZONE });
   return `${timeStr} on ${dateStr}`;
+}
+
+// ---------- Central time helpers ----------
+// BUSINESS_HOURS_START/END and PRO_NOTIFICATION_HOLD_HOUR are meant to be
+// read in Kirkwood, MO local time (America/Chicago), not whatever timezone
+// the Node process happens to be running in. Most hosts default their
+// containers to UTC, so plain now.getHours()/now.setHours() silently used
+// the wrong clock. Everything below reads/writes wall-clock time explicitly
+// in America/Chicago, regardless of the server's own system timezone.
+const APP_TIMEZONE = 'America/Chicago';
+
+// Y/M/D/H/Mi as they read on a clock on the wall in APP_TIMEZONE, for a
+// given absolute instant.
+function zonedParts(date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: APP_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type) => parseInt(parts.find(p => p.type === type).value, 10);
+  return {
+    year: get('year'),
+    month: get('month'),
+    day: get('day'),
+    // Some locales render midnight as "24"; normalize to 0.
+    hour: get('hour') % 24,
+    minute: get('minute'),
+    second: get('second'),
+  };
+}
+
+// Current fractional hour (e.g. 13.5 for 1:30pm) as it reads on the wall in
+// APP_TIMEZONE — replaces now.getHours() + now.getMinutes() / 60.
+function zonedHourFraction(date) {
+  const { hour, minute } = zonedParts(date);
+  return hour + minute / 60;
+}
+
+// UTC offset (in minutes, e.g. -300 for CDT, -360 for CST) that APP_TIMEZONE
+// was at for the given instant.
+function zonedOffsetMinutes(date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: APP_TIMEZONE,
+    timeZoneName: 'shortOffset',
+  }).formatToParts(date);
+  const tzName = parts.find(p => p.type === 'timeZoneName').value; // "GMT-5"
+  const match = tzName.match(/GMT([+-]\d+)(?::(\d+))?/);
+  const hours = match ? parseInt(match[1], 10) : 0;
+  const minutes = match && match[2] ? parseInt(match[2], 10) : 0;
+  return hours * 60 + (hours < 0 ? -minutes : minutes);
+}
+
+// Converts a wall-clock Y-M-D H:Mi *as read in APP_TIMEZONE* into the
+// corresponding absolute instant (a real Date/UTC timestamp). This is the
+// inverse of zonedParts, and is what lets us say "9am Central" and get back
+// a correct Date no matter what timezone the server process is in, and
+// without getting tripped up at DST transitions.
+function zonedWallTimeToUtc(year, month, day, hour, minute = 0) {
+  let guessMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+  // Two passes is enough to converge even across a DST boundary.
+  for (let i = 0; i < 2; i++) {
+    const offsetMin = zonedOffsetMinutes(new Date(guessMs));
+    guessMs = Date.UTC(year, month - 1, day, hour, minute, 0) - offsetMin * 60000;
+  }
+  return new Date(guessMs);
+}
+
+// Adds `days` to a Y-M-D date, doing the arithmetic at UTC noon so DST
+// transitions in APP_TIMEZONE can't shift the calendar date by mistake.
+function addDaysToDateParts(year, month, day, days) {
+  const dt = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return { year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+}
+
+// Y-M-D of `date` as read in APP_TIMEZONE, used for "is this the same day"
+// comparisons instead of toDateString() (which uses the server's own zone).
+function zonedDateKey(date) {
+  const { year, month, day } = zonedParts(date);
+  return `${year}-${month}-${day}`;
 }
 
 // ---------- Bidding window timing ----------
@@ -398,19 +479,19 @@ function formatExpectedReplyTime(closesAt, now) {
 // giving them a real chance to see it and bid, rather than closing while
 // everyone's asleep.
 function nextBusinessOpenTime(now) {
-  const currentHour = now.getHours() + now.getMinutes() / 60;
-  const next = new Date(now);
-  next.setHours(BUSINESS_HOURS_START, 0, 0, 0);
+  const currentHour = zonedHourFraction(now);
+  const { year, month, day } = zonedParts(now);
+  let target = { year, month, day };
   if (currentHour >= BUSINESS_HOURS_START) {
     // We only get here when outside business hours, so being at/past the
     // opening hour means we're past closing — roll over to tomorrow.
-    next.setDate(next.getDate() + 1);
+    target = addDaysToDateParts(year, month, day, 1);
   }
-  return next;
+  return zonedWallTimeToUtc(target.year, target.month, target.day, BUSINESS_HOURS_START, 0);
 }
 
 function computeInitialWindowMs(now) {
-  const currentHour = now.getHours() + now.getMinutes() / 60;
+  const currentHour = zonedHourFraction(now);
   const inBusinessHours = currentHour >= BUSINESS_HOURS_START && currentHour < BUSINESS_HOURS_END;
   if (inBusinessHours) {
     return BID_WINDOW_MINUTES * 60 * 1000;
@@ -419,16 +500,18 @@ function computeInitialWindowMs(now) {
   return msUntilOpen + (60 * 60 * 1000); // + 1 hour buffer past opening
 }
 
-// Generic "next time the clock hits this hour" helper — unlike
-// nextBusinessOpenTime above, this doesn't assume it's only called when
-// already outside some range, so it's reusable for other hour-based cutoffs.
+// Generic "next time the clock hits this hour (in APP_TIMEZONE)" helper —
+// unlike nextBusinessOpenTime above, this doesn't assume it's only called
+// when already outside some range, so it's reusable for other hour-based
+// cutoffs.
 function nextOccurrenceOfHour(now, hour) {
-  const next = new Date(now);
-  next.setHours(hour, 0, 0, 0);
-  if (next.getTime() <= now.getTime()) {
-    next.setDate(next.getDate() + 1);
+  const { year, month, day } = zonedParts(now);
+  let candidate = zonedWallTimeToUtc(year, month, day, hour, 0);
+  if (candidate.getTime() <= now.getTime()) {
+    const tomorrow = addDaysToDateParts(year, month, day, 1);
+    candidate = zonedWallTimeToUtc(tomorrow.year, tomorrow.month, tomorrow.day, hour, 0);
   }
-  return next;
+  return candidate;
 }
 
 // If a job comes in outside PRO_NOTIFICATION_HOLD_HOUR–BUSINESS_HOURS_END
@@ -436,7 +519,7 @@ function nextOccurrenceOfHour(now, hour) {
 // time it occurs — nobody wants a job alert at 1am. Returns null if the
 // job should be broadcast immediately (already within the allowed window).
 function computeBroadcastHoldUntil(now) {
-  const currentHour = now.getHours() + now.getMinutes() / 60;
+  const currentHour = zonedHourFraction(now);
   const inAllowedWindow = currentHour >= PRO_NOTIFICATION_HOLD_HOUR && currentHour < BUSINESS_HOURS_END;
   if (inAllowedWindow) return null;
   return nextOccurrenceOfHour(now, PRO_NOTIFICATION_HOLD_HOUR);
@@ -602,7 +685,7 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     // away on an off-hours window.
     const expectedBy = formatExpectedReplyTime(closesAt, now);
     const homeownerText = holdUntil
-      ? `Thank you for using Kirkwood Lawn and Landscape Service Finder. It's currently outside pro notification hours, so we'll reach out to nearby lawncare pros starting at ${holdUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`
+      ? `Thank you for using Kirkwood Lawn and Landscape Service Finder. It's currently outside pro notification hours, so we'll reach out to nearby lawncare pros starting at ${holdUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: APP_TIMEZONE })}. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`
       : `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`;
     await sendSMS(job.phone, homeownerText);
 
