@@ -601,7 +601,7 @@ async function broadcastJobToPros(job) {
 
     if (localPhotoPath) {
       if (p.email) {
-        text += ' Check your email for a photo of the job.';
+        text += ' Check your email for photos of this job.';
         await sendJobPhotoEmail(p.email, job, localPhotoPath);
       } else if (photoMediaUrl) {
         text += ' A photo of the job is attached.';
