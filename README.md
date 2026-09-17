@@ -13,7 +13,10 @@ pros).
 2. Submitting the form sends a `POST /api/requests` to the backend, which
    saves the job to a local database.
 3. The backend texts every active pro in your network (Twilio SMS) with a
-   summary of the job and instructions to reply `BID <job#> <price>`.
+   summary of the job and instructions to reply `BID <job#> <price>` — or,
+   if the job comes in outside pro-notification hours, holds that broadcast
+   until the next morning instead (see "Holding notifications overnight"
+   below).
 4. When a pro replies, Twilio forwards that text to `POST /api/sms-inbound`,
    which parses the price and records the bid.
 5. After a bidding window (30 minutes by default, configurable) the backend
@@ -119,6 +122,43 @@ image and job photos attached to the pro broadcast will not be sent — the
 app falls back to plain text (a payment link instead of a QR code image,
 and no photo attachment) automatically, no configuration needed.
 
+## Holding notifications overnight
+
+If a homeowner submits a job outside `PRO_NOTIFICATION_HOLD_HOUR`–
+`BUSINESS_HOURS_END` (default 8am–6pm), pros aren't texted or emailed right
+away — the broadcast is held until the next occurrence of
+`PRO_NOTIFICATION_HOLD_HOUR`. Nobody wants a job alert at 1am.
+
+What actually happens for an off-hours submission:
+
+- The **homeowner** still gets an immediate confirmation text, but with
+  different wording letting them know pros will be reached out to starting
+  at the hold hour (e.g. *"It's currently outside pro notification hours,
+  so we'll reach out to nearby lawncare pros starting at 8:00 AM"*).
+- **Pros get nothing at all** until the hold hour arrives — no text, no
+  email, nothing to react to overnight.
+- The **bidding window doesn't start counting down** until the broadcast
+  actually goes out. A job submitted at 11pm doesn't lose 9 hours of
+  bidding time to the middle of the night before anyone's even seen it —
+  the window is computed from the actual broadcast time, not the
+  submission time.
+- This is independent of `BUSINESS_HOURS_START`/`BUSINESS_HOURS_END`'s
+  other job — those two also control how long the bidding window itself
+  runs (see below) — `PRO_NOTIFICATION_HOLD_HOUR` only controls when pros
+  first hear about a job, and can be set to a different hour than
+  `BUSINESS_HOURS_START` if you want pros notified earlier or later than
+  when the bidding-window logic considers "business hours" to begin.
+
+In the admin dashboard, a job waiting on its held broadcast shows "pros
+notified at [time]" instead of the usual "bidding closes [time]," so it's
+easy to tell apart from a job that's actively collecting bids.
+
+If the server restarts while a broadcast is still pending, it picks up
+exactly where it left off — a broadcast whose time already passed while the
+server was down fires immediately on startup, and one still in the future
+gets rescheduled for its original time, same as the other timers in this
+app (bid-window close, confirmation timeout).
+
 ## Adjusting how bidding works
 
 - **Bidding window**: set `BID_WINDOW_MINUTES` in `.env` (default 30) — this
@@ -208,6 +248,44 @@ If you'd rather store `storage/` somewhere else entirely, set the
 `STORAGE_DIR` environment variable to an absolute path — this is also how
 you'd point at a disk mounted somewhere other than the default location.
 
+### Schema migrations
+
+Now that the database survives deploys, adding a new column to the code
+(as several updates in this project's history have done) doesn't
+automatically add it to your *existing* database file —
+`CREATE TABLE IF NOT EXISTS` only helps on a brand-new database. Every
+column added after initial launch has a corresponding `ensureColumn(...)`
+call right after the schema block in `server.js`, which runs on every
+startup and safely adds any column that's missing, without touching
+existing data. This is why, if you ever add your own new column to a
+table, you should add a matching `ensureColumn(...)` call rather than only
+updating the `CREATE TABLE` statement — otherwise it'll work fine on a
+fresh install but crash on your live database the next time you deploy.
+
+## Managing jobs in the admin dashboard
+
+The **Jobs** section only shows active jobs (`open` and
+`awaiting_confirmation`) — anything resolved moves to a separate
+**Archived jobs** section automatically, so the active list doesn't fill up
+with old, finished jobs:
+
+- **Bid sent** — the homeowner confirmed a bid (formerly shown as
+  "matched")
+- **No bids** — the window closed with zero bids, shown with a distinct red
+  flag so it's easy to spot at a glance
+- **Cancelled** — the homeowner declined, or never responded in time
+
+If no bids come in on a job, the homeowner is **not** notified — a text
+saying "nothing happened" isn't useful to them, so this is surfaced only in
+the admin dashboard's "No bids" flag for you to follow up on manually if
+you want to.
+
+Every job, active or archived, has a **Delete job** link. This permanently
+removes the job and its bids — there's a confirmation prompt since it can't
+be undone, but nothing else in the app depends on old job records existing
+(no reports or analytics reference them), so deleting old test jobs or
+mistakes is safe.
+
 ## Notes on the data model
 
 - **`jobs`** — one row per homeowner request (services, address, phone,
@@ -215,7 +293,9 @@ you'd point at a disk mounted somewhere other than the default location.
   or `expired`). `pending_bid_id` holds the tentatively selected bid while
   waiting on the homeowner's Y/N reply; `winning_bid_id` is only set once
   they confirm. `fee_amount` and `fee_paid` track the network fee — see
-  "Network fee" below.
+  "Network fee" below. `broadcast_at` and `broadcast_sent` track whether the
+  pro broadcast has gone out yet, or is still being held until morning —
+  see "Holding notifications overnight" above.
 - **`pros`** — your network of lawn care professionals (name, phone, an
   optional email — used to send job photos, see below — and
   active/paused).
@@ -277,12 +357,13 @@ Winning pros owe a flat fee, tiered by their winning bid amount:
 | Over $100 | $30 |
 
 The fee is mentioned in the "You won job #X!" text the pro receives — *"A
-$20 network fee is due in 7 days."* — and tracked per job in the admin
-dashboard (`fee_amount` / `fee_paid`). The app doesn't collect this fee
-itself — you collect it directly (Venmo, Zelle, cash, PayPal, etc.) and mark
-it paid in the admin dashboard once received. The enforcement lever is the
-existing pause toggle on the pro network: a pro who doesn't pay can simply
-be paused, which stops them from receiving future job broadcasts.
+$20 network fee is due in 7 days or after completion of the job."* — and
+tracked per job in the admin dashboard (`fee_amount` / `fee_paid`). The app
+doesn't collect this fee itself — you collect it directly (Venmo, Zelle,
+cash, PayPal, etc.) and mark it paid in the admin dashboard once received.
+The enforcement lever is the existing pause toggle on the pro network: a
+pro who doesn't pay can simply be paused, which stops them from receiving
+future job broadcasts.
 
 To change the fee tiers or amounts, edit `computeFeeAmount()` in
 `server.js`.

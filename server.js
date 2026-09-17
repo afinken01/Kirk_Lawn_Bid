@@ -9,7 +9,7 @@ const nodemailer = require('nodemailer');
 const Database = require('better-sqlite3');
 
 const PORT = process.env.PORT || 3000;
-const BID_WINDOW_MINUTES = parseFloat(process.env.BID_WINDOW_MINUTES || '30');
+const BID_WINDOW_MINUTES = parseFloat(process.env.BID_WINDOW_MINUTES || '60');
 const BUSINESS_HOURS_START = parseInt(process.env.BUSINESS_HOURS_START || '9', 10);  // 24hr, e.g. 9 = 9am
 const BUSINESS_HOURS_END = parseInt(process.env.BUSINESS_HOURS_END || '18', 10);     // 24hr, e.g. 18 = 6pm
 const PRO_NOTIFICATION_HOLD_HOUR = parseInt(process.env.PRO_NOTIFICATION_HOLD_HOUR || '8', 10); // 24hr, e.g. 8 = 8am
@@ -811,7 +811,7 @@ async function confirmBid(jobId) {
   const qrImageUrl = paymentUrl ? qrImageUrlForJob(jobId) : null;
   const payLine = qrImageUrl ? ' Scan the QR code to pay.' : (paymentUrl ? ` Pay here: ${paymentUrl}` : '');
   await sendSMS(winner.pro_phone,
-    `You won job #${jobId}! A $${job.fee_amount} network fee is due in 7 days.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`,
+    `You won job #${jobId}! A $${job.fee_amount} network fee is due in 7 days or after completion of the job.${payLine} Homeowner phone: ${job.phone}. Address: ${job.address}. Please reach out to schedule.`,
     qrImageUrl);
 
   const others = db.prepare('SELECT * FROM bids WHERE job_id = ? AND id != ?').all(jobId, winner.id);
