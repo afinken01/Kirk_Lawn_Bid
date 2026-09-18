@@ -42,10 +42,40 @@
   .toggle-link{color:var(--ink-soft);cursor:pointer;font-size:0.85rem;text-decoration:underline;}
   .empty{color:var(--ink-soft);font-size:0.9rem;}
   .refresh{float:right;font-size:0.85rem;color:var(--ink-soft);cursor:pointer;text-decoration:underline;}
+  .remove-x{color:var(--error);cursor:pointer;font-weight:700;font-size:1rem;line-height:1;padding:0 4px;}
+  .remove-x:hover{opacity:0.7;}
+  .table-scroll{overflow-x:auto;width:100%;}
+  .jobs-table{min-width:1200px;}
+  .jobs-table td, .jobs-table th{vertical-align:top;white-space:normal;}
+  .jobs-table td:first-child, .jobs-table th:first-child{white-space:nowrap;}
+  .btn-sm{padding:4px 9px;font-size:0.78rem;}
+  .bid-line{padding:4px 0;border-top:1px dashed var(--paper-line);display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:0.85rem;}
+  .bid-line:first-child{border-top:none;}
+  .job-photo-thumb{width:64px;height:48px;object-fit:cover;border-radius:3px;cursor:zoom-in;border:1px solid var(--paper-line);display:block;}
+  .photo-modal{position:fixed;inset:0;background:rgba(20,20,16,0.82);display:none;align-items:center;justify-content:center;z-index:1000;padding:24px;}
+  .photo-modal.open{display:flex;}
+  .photo-modal-inner{position:relative;background:var(--white);border-radius:6px;padding:18px;max-width:min(90vw,600px);max-height:90vh;display:flex;flex-direction:column;gap:12px;align-items:center;}
+  .photo-modal-inner img{max-width:100%;max-height:65vh;border-radius:4px;object-fit:contain;}
+  .photo-modal-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center;}
+  .photo-modal-close{position:absolute;top:-14px;right:-14px;background:var(--evergreen);color:var(--white);width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1.1rem;line-height:1;}
+  #photoCopyStatus{font-size:0.85rem;color:var(--ink-soft);min-height:1.2em;}
 </style>
 </head>
 <body>
 <header><h1>Lawn Bid — admin dashboard</h1></header>
+
+<div class="photo-modal" id="photoModal" onclick="if(event.target===this) closePhotoModal()">
+  <div class="photo-modal-inner">
+    <span class="photo-modal-close" onclick="closePhotoModal()">&times;</span>
+    <img id="photoModalImg" src="" alt="Job photo">
+    <div class="photo-modal-actions">
+      <button class="btn" onclick="copyCurrentPhoto()">Copy image</button>
+      <a id="photoModalOpen" class="btn" style="text-decoration:none;display:inline-block;" href="#" target="_blank" rel="noopener">Open full size</a>
+    </div>
+    <div id="photoCopyStatus"></div>
+  </div>
+</div>
+
 <div class="wrap">
 
   <section>
@@ -56,7 +86,7 @@
       <input type="email" id="proEmail" placeholder="Email (optional)">
       <button type="submit">Add to network</button>
     </form>
-    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
   <section>
@@ -66,12 +96,28 @@
 
   <section>
     <h2>Jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
-    <div id="jobsList"><p class="empty">Loading...</p></div>
+    <div class="table-scroll">
+      <table class="jobs-table" id="jobsTable">
+        <thead><tr>
+          <th>Job #</th><th>Status</th><th>Service(s)</th><th>Address</th><th>Phone</th>
+          <th>Yard size</th><th>Job request</th><th>Photo</th><th>Timing</th><th>Bids</th><th>Fee</th><th></th>
+        </tr></thead>
+        <tbody id="jobsTableBody"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
   </section>
 
   <section>
     <h2>Archived jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
-    <div id="archivedJobsList"><p class="empty">Loading...</p></div>
+    <div class="table-scroll">
+      <table class="jobs-table" id="archivedJobsTable">
+        <thead><tr>
+          <th>Job #</th><th>Status</th><th>Service(s)</th><th>Address</th><th>Phone</th>
+          <th>Yard size</th><th>Job request</th><th>Photo</th><th>Timing</th><th>Bids</th><th>Fee</th><th></th>
+        </tr></thead>
+        <tbody id="archivedJobsTableBody"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
   </section>
 
   <section>
@@ -110,18 +156,25 @@ function formatServerTimestamp(ts) {
 async function loadPros(){
   const pros = await fetch('/api/admin/pros').then(r=>r.json());
   const tbody = document.querySelector('#prosTable tbody');
-  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="5" class="empty">No pros added yet.</td></tr>';
+  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="6" class="empty">No pros added yet.</td></tr>';
   pros.forEach(p=>{
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${p.name}</td><td>${p.phone}</td><td>${p.email || '—'}</td>
       <td>${p.active ? 'Active' : 'Paused'}</td>
-      <td><span class="toggle-link" onclick="togglePro(${p.id})">${p.active ? 'pause' : 'resume'}</span></td>`;
+      <td><span class="toggle-link" onclick="togglePro(${p.id})">${p.active ? 'pause' : 'resume'}</span></td>
+      <td><span class="remove-x" title="Remove from network" onclick="deletePro(${p.id}, '${escapeHtml(p.name).replace(/'/g, "\\'")}')">&times;</span></td>`;
     tbody.appendChild(tr);
   });
 }
 
 async function togglePro(id){
   await fetch(`/api/admin/pros/${id}/toggle`, { method:'POST' });
+  loadPros();
+}
+
+async function deletePro(id, name){
+  if(!confirm(`Remove ${name} from your pro network? This cannot be undone.`)) return;
+  await fetch(`/api/admin/pros/${id}`, { method:'DELETE' });
   loadPros();
 }
 
@@ -146,68 +199,77 @@ function statusLabel(status){
   return status.replace('_',' ');
 }
 
-function renderJobCard(j){
-  const card = document.createElement('div');
-  card.className = 'job-card';
-  const bidsHtml = j.bids.length
+function renderJobRow(j){
+  const tr = document.createElement('tr');
+
+  const bidsCell = j.bids.length
     ? j.bids.map(b => `
-      <div class="bid-row">
-        <span>${b.pro_name || b.pro_phone} — $${b.price.toFixed(2)}</span>
-        ${j.status === 'open' ? `<button class="btn" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
+      <div class="bid-line">
+        <span>${escapeHtml(b.pro_name || b.pro_phone)} — $${b.price.toFixed(2)}</span>
+        ${j.status === 'open' ? `<button class="btn btn-sm" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
           : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>'
             : (j.pending_bid_id === b.id ? '<span class="pill awaiting_confirmation">Pending</span>' : ''))}
       </div>`).join('')
-    : '<p class="empty">No bids yet.</p>';
+    : '<span class="empty">No bids yet.</span>';
 
-  const confirmationHtml = (j.status === 'awaiting_confirmation') ? `
-    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-      <span>Awaiting homeowner reply${j.confirmation_expires_at ? ' · times out ' + formatServerTimestamp(j.confirmation_expires_at) : ''}</span>
-    </div>
-    <div class="bid-row">
-      <button class="btn" onclick="forceConfirm(${j.id})">Force confirm</button>
-      <button class="btn" onclick="forceCancel(${j.id})">Force cancel</button>
-    </div>` : '';
+  let timingCell = '—';
+  if (j.status === 'open') {
+    timingCell = j.broadcast_sent
+      ? `Bidding closes ${formatServerTimestamp(j.closes_at)}`
+      : `Pros notified ${formatServerTimestamp(j.broadcast_at)}`;
+  } else if (j.status === 'awaiting_confirmation') {
+    timingCell = 'Awaiting reply' + (j.confirmation_expires_at ? `, times out ${formatServerTimestamp(j.confirmation_expires_at)}` : '');
+  }
 
-  const feeHtml = (j.status === 'matched' && j.fee_amount != null) ? `
-    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-      <span>Network fee: $${j.fee_amount.toFixed(2)} <span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span></span>
-      <button class="btn" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>
-    </div>` : '';
+  const photoCell = j.photo_path
+    ? `<img src="${j.photo_path}" class="job-photo-thumb" onclick="openPhotoModal('${j.photo_path}')" alt="Job photo — click to view full size and copy">`
+    : '—';
 
-  card.innerHTML = `
-    <div class="job-head">
-      <strong>Job #${j.id} — ${j.services.join(', ')}</strong>
-      <span class="pill ${j.status}">${statusLabel(j.status)}</span>
-    </div>
-    <div class="job-meta">${j.address} · ${j.phone}${j.yard_size ? ' · ' + j.yard_size : ''}${j.notes ? ' · ' + j.notes : ''}${j.status === 'open' ? (j.broadcast_sent ? ' · bidding closes ' + formatServerTimestamp(j.closes_at) : ' · pros notified at ' + formatServerTimestamp(j.broadcast_at)) : ''}</div>
-    ${j.photo_path ? `<img src="${j.photo_path}" style="max-width:160px;border-radius:3px;margin-bottom:10px;display:block;">` : ''}
-    ${bidsHtml}
-    ${confirmationHtml}
-    ${feeHtml}
-    <div class="bid-row" style="border-top:1px dashed var(--paper-line);">
-      <span></span>
-      <span class="toggle-link" onclick="deleteJob(${j.id})" style="color:var(--error);">Delete job</span>
-    </div>
+  const feeCell = (j.status === 'matched' && j.fee_amount != null)
+    ? `$${j.fee_amount.toFixed(2)}<br><span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span>
+       <button class="btn btn-sm" style="margin-top:4px;" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>`
+    : '—';
+
+  let actionsCell = '';
+  if (j.status === 'awaiting_confirmation') {
+    actionsCell += `<button class="btn btn-sm" onclick="forceConfirm(${j.id})">Force confirm</button>
+      <button class="btn btn-sm" style="margin-top:4px;" onclick="forceCancel(${j.id})">Force cancel</button><br>`;
+  }
+  actionsCell += `<span class="toggle-link" onclick="deleteJob(${j.id})" style="color:var(--error);">Delete</span>`;
+
+  tr.innerHTML = `
+    <td>#${j.id}</td>
+    <td><span class="pill ${j.status}">${statusLabel(j.status)}</span></td>
+    <td>${escapeHtml(j.services.join(', '))}</td>
+    <td>${escapeHtml(j.address)}</td>
+    <td>${escapeHtml(j.phone)}</td>
+    <td>${j.yard_size ? escapeHtml(j.yard_size) : '—'}</td>
+    <td>${j.notes ? escapeHtml(j.notes) : '—'}</td>
+    <td>${photoCell}</td>
+    <td>${timingCell}</td>
+    <td>${bidsCell}</td>
+    <td>${feeCell}</td>
+    <td>${actionsCell}</td>
   `;
-  return card;
+  return tr;
 }
 
 async function loadJobs(){
   const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
   const active = jobs.filter(j => j.status === 'open' || j.status === 'awaiting_confirmation');
-  const list = document.getElementById('jobsList');
-  if(!active.length){ list.innerHTML = '<p class="empty">No active job requests.</p>'; return; }
-  list.innerHTML = '';
-  active.forEach(j => list.appendChild(renderJobCard(j)));
+  const tbody = document.getElementById('jobsTableBody');
+  if(!active.length){ tbody.innerHTML = '<tr><td colspan="12" class="empty">No active job requests.</td></tr>'; return; }
+  tbody.innerHTML = '';
+  active.forEach(j => tbody.appendChild(renderJobRow(j)));
 }
 
 async function loadArchivedJobs(){
   const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
   const archived = jobs.filter(j => j.status === 'matched' || j.status === 'cancelled' || j.status === 'expired');
-  const list = document.getElementById('archivedJobsList');
-  if(!archived.length){ list.innerHTML = '<p class="empty">No archived jobs yet.</p>'; return; }
-  list.innerHTML = '';
-  archived.forEach(j => list.appendChild(renderJobCard(j)));
+  const tbody = document.getElementById('archivedJobsTableBody');
+  if(!archived.length){ tbody.innerHTML = '<tr><td colspan="12" class="empty">No archived jobs yet.</td></tr>'; return; }
+  tbody.innerHTML = '';
+  archived.forEach(j => tbody.appendChild(renderJobRow(j)));
 }
 
 async function deleteJob(jobId){
@@ -243,6 +305,38 @@ function escapeHtml(str){
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+let currentPhotoUrl = null;
+
+function openPhotoModal(url){
+  currentPhotoUrl = url;
+  document.getElementById('photoModalImg').src = url;
+  document.getElementById('photoModalOpen').href = url;
+  document.getElementById('photoCopyStatus').textContent = '';
+  document.getElementById('photoModal').classList.add('open');
+}
+
+function closePhotoModal(){
+  document.getElementById('photoModal').classList.remove('open');
+  currentPhotoUrl = null;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePhotoModal(); });
+
+async function copyCurrentPhoto(){
+  const status = document.getElementById('photoCopyStatus');
+  if (!currentPhotoUrl) return;
+  status.textContent = 'Copying…';
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error('Clipboard API unsupported');
+    const resp = await fetch(currentPhotoUrl);
+    const blob = await resp.blob();
+    await navigator.clipboard.write([ new ClipboardItem({ [blob.type]: blob }) ]);
+    status.textContent = 'Copied to clipboard.';
+  } catch (err) {
+    status.textContent = 'Couldn\u2019t copy automatically \u2014 right-click the image above and choose "Copy image" instead.';
+  }
 }
 
 async function loadSupport(){
