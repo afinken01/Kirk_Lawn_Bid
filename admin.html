@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lawn Bid — admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --evergreen:#1F3D2B; --marigold:#C98A2C; --paper:#EDE6D6; --paper-line:#D8CDB4;
+    --ink:#23261F; --ink-soft:#5B5A4E; --white:#FBF9F3; --error:#9C3B2E;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;}
+  header{background:var(--evergreen);color:var(--white);padding:26px 24px;}
+  header h1{font-family:'Zilla Slab',serif;margin:0;font-size:1.4rem;}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px;}
+  section{background:var(--white);border-radius:4px;padding:22px 24px;margin-bottom:24px;box-shadow:0 8px 20px rgba(20,42,29,0.08);}
+  h2{font-family:'Zilla Slab',serif;font-size:1.1rem;margin:0 0 16px;}
+  .pro-form{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+  .pro-form input{flex:1;min-width:140px;padding:9px 12px;border:1.5px solid var(--paper-line);border-radius:3px;font-family:inherit;}
+  .pro-form button, .btn{background:var(--marigold);color:var(--evergreen);border:none;font-weight:700;padding:9px 16px;border-radius:3px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .pro-form button:hover, .btn:hover{background:#B87D24;}
+  table{width:100%;border-collapse:collapse;font-size:0.92rem;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--paper-line);}
+  th{color:var(--ink-soft);font-weight:600;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.03em;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:0.78rem;font-weight:600;}
+  .pill.open{background:#EAF1E2;color:var(--evergreen);}
+  .pill.matched{background:#FCEFDD;color:#8A5A16;}
+  .pill.awaiting_confirmation{background:#E9F0FA;color:#2A5C8A;}
+  .pill.expired{background:#FBEDEA;color:var(--error);}
+  .pill.cancelled{background:#F1EEE6;color:var(--ink-soft);}
+  .pill.new{background:#FCEFDD;color:#8A5A16;}
+  .pill.resolved{background:#F1EEE6;color:var(--ink-soft);}
+  .job-card{border:1px solid var(--paper-line);border-radius:4px;padding:16px 18px;margin-bottom:14px;}
+  .job-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+  .job-head strong{font-family:'Zilla Slab',serif;font-size:1.05rem;}
+  .job-meta{color:var(--ink-soft);font-size:0.88rem;margin-bottom:10px;}
+  .bid-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-top:1px dashed var(--paper-line);font-size:0.9rem;}
+  .bid-row:first-of-type{border-top:none;}
+  .toggle-link{color:var(--ink-soft);cursor:pointer;font-size:0.85rem;text-decoration:underline;}
+  .empty{color:var(--ink-soft);font-size:0.9rem;}
+  .refresh{float:right;font-size:0.85rem;color:var(--ink-soft);cursor:pointer;text-decoration:underline;}
+  .remove-x{color:var(--error);cursor:pointer;font-weight:700;font-size:1rem;line-height:1;padding:0 4px;}
+  .remove-x:hover{opacity:0.7;}
+  .table-scroll{overflow-x:auto;width:100%;}
+  .jobs-table{min-width:1200px;}
+  .jobs-table td, .jobs-table th{vertical-align:top;white-space:normal;}
+  .jobs-table td:first-child, .jobs-table th:first-child{white-space:nowrap;}
+  .btn-sm{padding:4px 9px;font-size:0.78rem;}
+  .bid-line{padding:4px 0;border-top:1px dashed var(--paper-line);display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:0.85rem;}
+  .bid-line:first-child{border-top:none;}
+  .job-photo-thumb{width:64px;height:48px;object-fit:cover;border-radius:3px;cursor:zoom-in;border:1px solid var(--paper-line);display:block;}
+  .photo-modal{position:fixed;inset:0;background:rgba(20,20,16,0.82);display:none;align-items:center;justify-content:center;z-index:1000;padding:24px;}
+  .photo-modal.open{display:flex;}
+  .photo-modal-inner{position:relative;background:var(--white);border-radius:6px;padding:18px;max-width:min(90vw,600px);max-height:90vh;display:flex;flex-direction:column;gap:12px;align-items:center;}
+  .photo-modal-inner img{max-width:100%;max-height:65vh;border-radius:4px;object-fit:contain;}
+  .photo-modal-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center;}
+  .photo-modal-close{position:absolute;top:-14px;right:-14px;background:var(--evergreen);color:var(--white);width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1.1rem;line-height:1;}
+  #photoCopyStatus{font-size:0.85rem;color:var(--ink-soft);min-height:1.2em;}
+</style>
+</head>
+<body>
+<header><h1>Lawn Bid — admin dashboard</h1></header>
+
+<div class="photo-modal" id="photoModal" onclick="if(event.target===this) closePhotoModal()">
+  <div class="photo-modal-inner">
+    <span class="photo-modal-close" onclick="closePhotoModal()">&times;</span>
+    <img id="photoModalImg" src="" alt="Job photo">
+    <div class="photo-modal-actions">
+      <button class="btn" onclick="copyCurrentPhoto()">Copy image</button>
+      <a id="photoModalOpen" class="btn" style="text-decoration:none;display:inline-block;" href="#" target="_blank" rel="noopener">Open full size</a>
+    </div>
+    <div id="photoCopyStatus"></div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section>
+    <h2>Pro network</h2>
+    <form class="pro-form" id="proForm">
+      <input type="text" id="proName" placeholder="Pro or crew name" required>
+      <input type="tel" id="proPhone" placeholder="Phone number" required>
+      <input type="email" id="proEmail" placeholder="Email (optional)">
+      <button type="submit">Add to network</button>
+    </form>
+    <table id="prosTable"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Pro network signup requests <span class="toggle-link" style="margin-left:8px;" onclick="toggleSignupFilter()" id="signupFilterToggle">show all</span> <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div id="proSignupsList"><p class="empty">Loading...</p></div>
+  </section>
+
+  <section>
+    <h2>Jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div class="table-scroll">
+      <table class="jobs-table" id="jobsTable">
+        <thead><tr>
+          <th>Job #</th><th>Status</th><th>Service(s)</th><th>Address</th><th>Phone</th>
+          <th>Yard size</th><th>Job request</th><th>Photo</th><th>Timing</th><th>Bids</th><th>Fee</th><th></th>
+        </tr></thead>
+        <tbody id="jobsTableBody"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Archived jobs <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div class="table-scroll">
+      <table class="jobs-table" id="archivedJobsTable">
+        <thead><tr>
+          <th>Job #</th><th>Status</th><th>Service(s)</th><th>Address</th><th>Phone</th>
+          <th>Yard size</th><th>Job request</th><th>Photo</th><th>Timing</th><th>Bids</th><th>Fee</th><th></th>
+        </tr></thead>
+        <tbody id="archivedJobsTableBody"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Customer service messages <span class="refresh" onclick="loadAll()">refresh</span></h2>
+    <div id="supportList"><p class="empty">Loading...</p></div>
+  </section>
+
+</div>
+
+<script>
+// closes_at / broadcast_at / confirmation_expires_at are stored as proper
+// ISO 8601 UTC strings (from Date#toISOString()), so `new Date(...)` parses
+// them correctly. created_at columns, though, come from SQLite's
+// `datetime('now')`, which returns a UTC clock reading formatted as
+// "YYYY-MM-DD HH:MM:SS" — no 'T', no 'Z', no offset. Browsers parse that
+// ambiguous format as *local* time rather than UTC, silently shifting it by
+// whatever the admin's own timezone offset happens to be. Route every
+// server timestamp through this helper so it's always read as the UTC
+// instant it actually is, then always display it in Central time (the
+// business's own timezone) rather than whatever timezone the admin's
+// browser happens to be set to.
+function parseServerTimestamp(ts) {
+  if (!ts) return null;
+  // Already unambiguous (has an explicit 'Z' or numeric offset) — safe as-is.
+  if (/Z$/.test(ts) || /[+-]\d\d:\d\d$/.test(ts)) return new Date(ts);
+  // Legacy/SQLite "YYYY-MM-DD HH:MM:SS" format: this value is already UTC,
+  // just missing the marker that says so.
+  return new Date(ts.replace(' ', 'T') + 'Z');
+}
+
+function formatServerTimestamp(ts) {
+  const d = parseServerTimestamp(ts);
+  return d ? d.toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' }) : '';
+}
+
+async function loadPros(){
+  const pros = await fetch('/api/admin/pros').then(r=>r.json());
+  const tbody = document.querySelector('#prosTable tbody');
+  tbody.innerHTML = pros.length ? '' : '<tr><td colspan="6" class="empty">No pros added yet.</td></tr>';
+  pros.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.name}</td><td>${p.phone}</td><td>${p.email || '—'}</td>
+      <td>${p.active ? 'Active' : 'Paused'}</td>
+      <td><span class="toggle-link" onclick="togglePro(${p.id})">${p.active ? 'pause' : 'resume'}</span></td>
+      <td><span class="remove-x" title="Remove from network" onclick="deletePro(${p.id}, '${escapeHtml(p.name).replace(/'/g, "\\'")}')">&times;</span></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function togglePro(id){
+  await fetch(`/api/admin/pros/${id}/toggle`, { method:'POST' });
+  loadPros();
+}
+
+async function deletePro(id, name){
+  if(!confirm(`Remove ${name} from your pro network? This cannot be undone.`)) return;
+  await fetch(`/api/admin/pros/${id}`, { method:'DELETE' });
+  loadPros();
+}
+
+document.getElementById('proForm').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const name = document.getElementById('proName').value.trim();
+  const phone = document.getElementById('proPhone').value.trim();
+  const email = document.getElementById('proEmail').value.trim();
+  if(!name || !phone) return;
+  await fetch('/api/admin/pros', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, phone, email })
+  });
+  document.getElementById('proForm').reset();
+  loadPros();
+});
+
+function statusLabel(status){
+  if (status === 'matched') return 'Bid sent';
+  if (status === 'expired') return 'No bids';
+  if (status === 'cancelled') return 'Cancelled';
+  return status.replace('_',' ');
+}
+
+function renderJobRow(j){
+  const tr = document.createElement('tr');
+
+  const bidsCell = j.bids.length
+    ? j.bids.map(b => `
+      <div class="bid-line">
+        <span>${escapeHtml(b.pro_name || b.pro_phone)} — $${b.price.toFixed(2)}</span>
+        ${j.status === 'open' ? `<button class="btn btn-sm" onclick="selectBid(${j.id}, ${b.id})">Select</button>`
+          : (j.winning_bid_id === b.id ? '<span class="pill matched">Winner</span>'
+            : (j.pending_bid_id === b.id ? '<span class="pill awaiting_confirmation">Pending</span>' : ''))}
+      </div>`).join('')
+    : '<span class="empty">No bids yet.</span>';
+
+  let timingCell = '—';
+  if (j.status === 'open') {
+    timingCell = j.broadcast_sent
+      ? `Bidding closes ${formatServerTimestamp(j.closes_at)}`
+      : `Pros notified ${formatServerTimestamp(j.broadcast_at)}`;
+  } else if (j.status === 'awaiting_confirmation') {
+    timingCell = 'Awaiting reply' + (j.confirmation_expires_at ? `, times out ${formatServerTimestamp(j.confirmation_expires_at)}` : '');
+  }
+
+  const photoCell = j.photo_path
+    ? `<img src="${j.photo_path}" class="job-photo-thumb" onclick="openPhotoModal('${j.photo_path}')" alt="Job photo — click to view full size and copy">`
+    : '—';
+
+  const feeCell = (j.status === 'matched' && j.fee_amount != null)
+    ? `$${j.fee_amount.toFixed(2)}<br><span class="pill ${j.fee_paid ? 'resolved' : 'new'}">${j.fee_paid ? 'paid' : 'unpaid'}</span>
+       <button class="btn btn-sm" style="margin-top:4px;" onclick="toggleFeePaid(${j.id})">${j.fee_paid ? 'Mark unpaid' : 'Mark paid'}</button>`
+    : '—';
+
+  let actionsCell = '';
+  if (j.status === 'awaiting_confirmation') {
+    actionsCell += `<button class="btn btn-sm" onclick="forceConfirm(${j.id})">Force confirm</button>
+      <button class="btn btn-sm" style="margin-top:4px;" onclick="forceCancel(${j.id})">Force cancel</button><br>`;
+  }
+  actionsCell += `<span class="toggle-link" onclick="deleteJob(${j.id})" style="color:var(--error);">Delete</span>`;
+
+  tr.innerHTML = `
+    <td>#${j.id}</td>
+    <td><span class="pill ${j.status}">${statusLabel(j.status)}</span></td>
+    <td>${escapeHtml(j.services.join(', '))}</td>
+    <td>${escapeHtml(j.address)}</td>
+    <td>${escapeHtml(j.phone)}</td>
+    <td>${j.yard_size ? escapeHtml(j.yard_size) : '—'}</td>
+    <td>${j.notes ? escapeHtml(j.notes) : '—'}</td>
+    <td>${photoCell}</td>
+    <td>${timingCell}</td>
+    <td>${bidsCell}</td>
+    <td>${feeCell}</td>
+    <td>${actionsCell}</td>
+  `;
+  return tr;
+}
+
+async function loadJobs(){
+  const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
+  const active = jobs.filter(j => j.status === 'open' || j.status === 'awaiting_confirmation');
+  const tbody = document.getElementById('jobsTableBody');
+  if(!active.length){ tbody.innerHTML = '<tr><td colspan="12" class="empty">No active job requests.</td></tr>'; return; }
+  tbody.innerHTML = '';
+  active.forEach(j => tbody.appendChild(renderJobRow(j)));
+}
+
+async function loadArchivedJobs(){
+  const jobs = await fetch('/api/admin/jobs').then(r=>r.json());
+  const archived = jobs.filter(j => j.status === 'matched' || j.status === 'cancelled' || j.status === 'expired');
+  const tbody = document.getElementById('archivedJobsTableBody');
+  if(!archived.length){ tbody.innerHTML = '<tr><td colspan="12" class="empty">No archived jobs yet.</td></tr>'; return; }
+  tbody.innerHTML = '';
+  archived.forEach(j => tbody.appendChild(renderJobRow(j)));
+}
+
+async function deleteJob(jobId){
+  if(!confirm(`Delete job #${jobId}? This cannot be undone.`)) return;
+  await fetch(`/api/admin/jobs/${jobId}`, { method:'DELETE' });
+  loadAll();
+}
+
+async function selectBid(jobId, bidId){
+  await fetch(`/api/admin/jobs/${jobId}/select`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ bidId })
+  });
+  loadAll();
+}
+
+async function toggleFeePaid(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/fee-paid`, { method:'POST' });
+  loadJobs();
+}
+
+async function forceConfirm(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/force-confirm`, { method:'POST' });
+  loadAll();
+}
+
+async function forceCancel(jobId){
+  await fetch(`/api/admin/jobs/${jobId}/force-cancel`, { method:'POST' });
+  loadAll();
+}
+
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str || '';
+  return div.innerHTML;
+}
+
+let currentPhotoUrl = null;
+
+function openPhotoModal(url){
+  currentPhotoUrl = url;
+  document.getElementById('photoModalImg').src = url;
+  document.getElementById('photoModalOpen').href = url;
+  document.getElementById('photoCopyStatus').textContent = '';
+  document.getElementById('photoModal').classList.add('open');
+}
+
+function closePhotoModal(){
+  document.getElementById('photoModal').classList.remove('open');
+  currentPhotoUrl = null;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePhotoModal(); });
+
+async function copyCurrentPhoto(){
+  const status = document.getElementById('photoCopyStatus');
+  if (!currentPhotoUrl) return;
+  status.textContent = 'Copying…';
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error('Clipboard API unsupported');
+    const resp = await fetch(currentPhotoUrl);
+    const blob = await resp.blob();
+    await navigator.clipboard.write([ new ClipboardItem({ [blob.type]: blob }) ]);
+    status.textContent = 'Copied to clipboard.';
+  } catch (err) {
+    status.textContent = 'Couldn\u2019t copy automatically \u2014 right-click the image above and choose "Copy image" instead.';
+  }
+}
+
+async function loadSupport(){
+  const messages = await fetch('/api/admin/support').then(r=>r.json());
+  const list = document.getElementById('supportList');
+  if(!messages.length){ list.innerHTML = '<p class="empty">No customer service messages yet.</p>'; return; }
+  list.innerHTML = '';
+  messages.forEach(m=>{
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    card.innerHTML = `
+      <div class="job-head">
+        <strong>${escapeHtml(m.name)}</strong>
+        <span class="pill ${m.status}">${m.status}</span>
+      </div>
+      <div class="job-meta">${[m.address, m.phone].filter(Boolean).map(escapeHtml).join(' · ') || 'No contact info provided'} · ${formatServerTimestamp(m.created_at)}</div>
+      <p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(m.message)}</p>
+      <button class="btn" onclick="toggleSupport(${m.id})">${m.status === 'resolved' ? 'Mark as new' : 'Mark resolved'}</button>
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function toggleSupport(id){
+  await fetch(`/api/admin/support/${id}/resolve`, { method:'POST' });
+  loadSupport();
+}
+
+let showAllProSignups = false;
+
+function toggleSignupFilter(){
+  showAllProSignups = !showAllProSignups;
+  document.getElementById('signupFilterToggle').textContent = showAllProSignups ? 'show new only' : 'show all';
+  loadProSignups();
+}
+
+async function loadProSignups(){
+  const signups = await fetch('/api/admin/pro-signups').then(r=>r.json());
+  const visible = showAllProSignups ? signups : signups.filter(s => s.status !== 'added');
+  const list = document.getElementById('proSignupsList');
+  if(!visible.length){
+    list.innerHTML = showAllProSignups
+      ? '<p class="empty">No signup requests yet.</p>'
+      : '<p class="empty">No new signup requests. <span class="toggle-link" onclick="toggleSignupFilter()">Show all</span></p>';
+    return;
+  }
+  list.innerHTML = '';
+  visible.forEach(s=>{
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    card.innerHTML = `
+      <div class="job-head">
+        <strong>${escapeHtml(s.business_name)}</strong>
+        <span class="pill ${s.status === 'added' ? 'resolved' : 'new'}">${s.status}</span>
+      </div>
+      <div class="job-meta">${escapeHtml(s.phone)}${s.email ? ' · ' + escapeHtml(s.email) : ''} · ${formatServerTimestamp(s.created_at)}</div>
+      ${s.notes ? `<p style="margin:8px 0;font-size:0.92rem;">${escapeHtml(s.notes)}</p>` : ''}
+      <div class="bid-row">
+        <button class="btn" onclick="addSignupToNetwork(${s.id}, '${escapeHtml(s.business_name).replace(/'/g, "\\'")}', '${escapeHtml(s.phone)}', '${s.email ? escapeHtml(s.email).replace(/'/g, "\\'") : ''}')">Add to network</button>
+        <span class="toggle-link" onclick="toggleProSignup(${s.id})">${s.status === 'added' ? 'mark as new' : 'mark added'}</span>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function toggleProSignup(id){
+  await fetch(`/api/admin/pro-signups/${id}/resolve`, { method:'POST' });
+  loadProSignups();
+}
+
+// Quick-fills the existing "Add to network" form above with this signup's
+// details so you don't have to retype them, then submits it and marks the
+// signup as added.
+async function addSignupToNetwork(id, businessName, phone, email){
+  document.getElementById('proName').value = businessName;
+  document.getElementById('proPhone').value = phone;
+  document.getElementById('proEmail').value = email || '';
+  await fetch('/api/admin/pros', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name: businessName, phone, email })
+  });
+  await fetch(`/api/admin/pro-signups/${id}/resolve`, { method:'POST' });
+  document.getElementById('proForm').reset();
+  loadAll();
+}
+
+function loadAll(){ loadPros(); loadJobs(); loadArchivedJobs(); loadSupport(); loadProSignups(); }
+loadAll();
+setInterval(() => { loadJobs(); loadArchivedJobs(); }, 15000);
+</script>
+</body>
+</html>
