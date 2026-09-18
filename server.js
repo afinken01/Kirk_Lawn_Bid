@@ -115,7 +115,7 @@ if (EMAIL_ENABLED) {
   console.warn('[email] SMTP env vars not set — running in DEV MODE. Emails will be logged to the console instead of sent.');
 }
 
-async function sendEmail(subject, text) {
+async function sendEmail(subject, text, attachments = []) {
   if (emailTransporter) {
     try {
       await emailTransporter.sendMail({
@@ -123,12 +123,14 @@ async function sendEmail(subject, text) {
         to: process.env.EMAIL_TO,
         subject,
         text,
+        ...(attachments.length ? { attachments } : {}),
       });
     } catch (err) {
       console.error('[email] Failed to send:', err.message);
     }
   } else {
-    console.log(`\n[DEV EMAIL] -> ${process.env.EMAIL_TO || '(no EMAIL_TO set)'}\nSubject: ${subject}\n${text}\n`);
+    const attachmentNote = attachments.length ? `\n[attachment: ${attachments.map(a => a.filename).join(', ')}]` : '';
+    console.log(`\n[DEV EMAIL] -> ${process.env.EMAIL_TO || '(no EMAIL_TO set)'}\nSubject: ${subject}\n${text}${attachmentNote}\n`);
   }
 }
 
@@ -695,9 +697,13 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
     const emailNotesLine = notes ? `\n\nJob request: ${notes}` : '';
     const emailYardLine = yardSize ? `\nYard size: ${yardSize}` : '';
     const emailPhotoLine = photoPath && publicUrlFor(photoPath) ? `\n\nPhoto: ${publicUrlFor(photoPath)}` : '';
+    const emailAttachments = photoPath
+      ? [{ filename: path.basename(photoPath), path: path.join(uploadDir, path.basename(photoPath)) }]
+      : [];
     await sendEmail(
       `New job request #${job.id} — ${services.join(', ')}`,
-      `A new job request came in.\n\nServices: ${services.join(', ')}\nAddress: ${address}\nPhone: ${phone}${emailYardLine}${emailNotesLine}${emailPhotoLine}\n\nView it in the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
+      `A new job request came in.\n\nServices: ${services.join(', ')}\nAddress: ${address}\nPhone: ${phone}${emailYardLine}${emailNotesLine}${emailPhotoLine}\n\nView it in the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`,
+      emailAttachments
     );
 
     res.json({ jobId: job.id, prosNotified, closesAt: closesAt.toISOString(), broadcastAt: broadcastAt.toISOString() });
