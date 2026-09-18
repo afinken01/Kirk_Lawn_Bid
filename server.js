@@ -689,6 +689,17 @@ app.post('/api/requests', upload.single('photo'), async (req, res) => {
       : `Thank you for using Kirkwood Lawn and Landscape Service Finder. We've texted our lawncare pros. You should expect a reply by ${expectedBy}. Reply STOP to opt out.`;
     await sendSMS(job.phone, homeownerText);
 
+    // Let you know a request came in without having to watch the dashboard —
+    // fires on every submission (not gated by test mode), independent of
+    // whether pros got texted.
+    const emailNotesLine = notes ? `\n\nJob request: ${notes}` : '';
+    const emailYardLine = yardSize ? `\nYard size: ${yardSize}` : '';
+    const emailPhotoLine = photoPath && publicUrlFor(photoPath) ? `\n\nPhoto: ${publicUrlFor(photoPath)}` : '';
+    await sendEmail(
+      `New job request #${job.id} — ${services.join(', ')}`,
+      `A new job request came in.\n\nServices: ${services.join(', ')}\nAddress: ${address}\nPhone: ${phone}${emailYardLine}${emailNotesLine}${emailPhotoLine}\n\nView it in the admin dashboard: ${process.env.PUBLIC_BASE_URL || ''}/admin.html`
+    );
+
     res.json({ jobId: job.id, prosNotified, closesAt: closesAt.toISOString(), broadcastAt: broadcastAt.toISOString() });
   } catch (err) {
     console.error(err);
