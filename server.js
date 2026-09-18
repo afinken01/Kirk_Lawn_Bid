@@ -976,6 +976,16 @@ app.post('/api/admin/pros/:id/toggle', (req, res) => {
   res.json(db.prepare('SELECT * FROM pros WHERE id = ?').get(pro.id));
 });
 
+app.delete('/api/admin/pros/:id', (req, res) => {
+  const pro = db.prepare('SELECT * FROM pros WHERE id = ?').get(req.params.id);
+  if (!pro) return res.status(404).json({ error: 'not found' });
+  // Bids store their own pro_phone/pro_name at the time they were placed
+  // rather than a foreign key to this row, so removing a pro doesn't touch
+  // job or bid history — past jobs still show who bid what.
+  db.prepare('DELETE FROM pros WHERE id = ?').run(pro.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/admin/jobs', (req, res) => {
   const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
   const withBids = jobs.map(j => ({
