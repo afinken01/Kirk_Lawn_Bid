@@ -21,7 +21,16 @@
   *{box-sizing:border-box;}
   body{
     margin:0;
-    background:var(--paper);
+    background:
+      repeating-linear-gradient(
+        115deg,
+        rgba(255,255,255,0.05) 0px,
+        rgba(255,255,255,0.05) 26px,
+        rgba(0,0,0,0.035) 26px,
+        rgba(0,0,0,0.035) 52px
+      ),
+      linear-gradient(180deg, #3E7A3F 0%, #2F6B35 40%, #255A2C 100%);
+    background-attachment:fixed;
     color:var(--ink);
     font-family:'Inter',sans-serif;
     line-height:1.5;
@@ -231,14 +240,15 @@
   .footer-link{
     background:none;
     border:none;
-    color:var(--ink-soft);
+    color:#E7F0DE;
     font-family:'Inter',sans-serif;
     font-size:0.9rem;
     text-decoration:underline;
     cursor:pointer;
     padding:8px;
   }
-  .footer-link:hover{color:var(--evergreen);}
+  .footer-link:hover{color:var(--white);}
+  .site-footer span{color:rgba(255,255,255,0.35) !important;}
 
   .modal-overlay{
     display:none;
